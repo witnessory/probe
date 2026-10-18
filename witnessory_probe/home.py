@@ -172,9 +172,10 @@ class Probe:
         return bid
 
     def bundle_upload(self, bid):
-        """The upload body for a sealed bundle: header, signatures, files."""
+        """The upload body for a sealed bundle: the header's exact bytes, signatures, files."""
         with open(os.path.join(self.bundles, f"{bid}.json"), "rb") as f:
-            header = json.loads(f.read())
+            raw = f.read()
+        header = json.loads(raw)
         sigs = {}
         for fn in os.listdir(self.bundles):
             if fn.startswith(bid + ".") and fn.endswith(".sig"):
@@ -184,7 +185,7 @@ class Probe:
         for entry in header["files"]:
             with open(os.path.join(self.objects, entry["sha256"]), "rb") as f:
                 files[entry["sha256"]] = core.b64(f.read())
-        return {"header": header, "signatures": sigs, "files": files}
+        return {"header_b64": core.b64(raw), "signatures": sigs, "files": files}
 
     def mark_sent(self, bid):
         if bid in self.state["unsent"]:

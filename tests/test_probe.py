@@ -223,7 +223,7 @@ class RunCycle(unittest.TestCase):
         self.assertEqual(c.errors, [])
         self.assertEqual(sorted(x["reason"] for x in c.refusals), ["bad signature", "unknown measure"])
         self.assertEqual(p.state["unsent"], [])
-        headers = sorted((b["header"] for b in c.bundles.values()), key=lambda h: h["seq"])
+        headers = sorted((json.loads(core.unb64(b["header_b64"])) for b in c.bundles.values()), key=lambda h: h["seq"])
         self.assertEqual([h["layer"] for h in headers], ["identity", "tls_pq"])
         self.assertEqual(headers[1]["prev"], core.sha256(core.canonical(headers[0])))
         self.assertEqual(headers[1]["task"]["task_id"], good["task"]["task_id"])

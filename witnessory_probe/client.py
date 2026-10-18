@@ -18,7 +18,18 @@ POLL_MIN, POLL_MAX, POLL_DEFAULT = 60, 3600, 300
 
 
 class Unreachable(RuntimeError):
-    """The coordinator could not be reached or answered with an error."""
+    """The coordinator could not be reached or answered with an error (code: the HTTP status, if any)."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+class Rejected(Unreachable):
+    """The coordinator refused what was sent, for good (sending it again would not help)."""
+
+
+PERMANENT = {400, 409, 413}
 
 
 class Coordinator:
@@ -40,15 +51,17 @@ class Coordinator:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
-            raise Unreachable(f"{method} {path}: HTTP {e.code}")
+            e.close()
+            if e.code == 401:                     # the coordinator does not know this probe: enrol again
+                self.probe.state["enrolled"] = False
+            raise (Rejected if e.code in PERMANENT else Unreachable)(f"{method} {path}: HTTP {e.code}", e.code)
         except (urllib.error.URLError, OSError, ValueError) as e:
             raise Unreachable(f"{method} {path}: {type(e).__name__}")
 
     def enrol(self):
-        card = self.probe.card
-        return self._request("POST", "/v1/enrol",
-                             {"card": card, "signatures": self.probe.keys.sign_all(core.canonical(card))},
-                             signed=False)
+        raw = core.canonical(self.probe.card)
+        body = {"card_b64": core.b64(raw), "signatures": self.probe.keys.sign_all(raw)}
+        return self._request("POST", "/v1/enrol", body, signed=False)
 
     def tasks(self):
         return self._request("GET", "/v1/tasks")
@@ -60,6 +73,17 @@ class Coordinator:
         return self._request("POST", "/v1/refusals", {"task_id": task_id, "reason": reason})
 
 
+def send(probe, coordinator, bid):
+    """Upload one bundle. A bundle the coordinator refuses for good is set aside (kept on disk, listed in the
+    state and the log) so it cannot block the ones after it."""
+    try:
+        coordinator.upload(bid)
+    except Rejected as e:
+        probe.state.setdefault("rejected", []).append({"bundle": bid, "reason": str(e)})
+        probe.log({"task_id": None, "measure": None, "targets": [], "outcome": f"bundle {bid[:12]} rejected: {e}"})
+    probe.mark_sent(bid)
+
+
 def cycle(probe, coordinator):
     """One cycle. Returns {"ran", "refused", "sent", "next_poll_s"}; raises Unreachable if the coordinator
     cannot be reached (the caller waits and tries again)."""
@@ -69,8 +93,7 @@ def cycle(probe, coordinator):
         probe.state["enrolled"] = True
         probe.save_state()
     for bid in list(probe.state["unsent"]):
-        coordinator.upload(bid)
-        probe.mark_sent(bid)
+        send(probe, coordinator, bid)
         out["sent"] += 1
     settings = probe.settings()
     if settings.get("paused"):
@@ -93,7 +116,6 @@ def cycle(probe, coordinator):
             continue
         bid = probe.execute(task, core.sha256(core.canonical(env)))
         out["ran"].append(task["task_id"])
-        coordinator.upload(bid)
-        probe.mark_sent(bid)
+        send(probe, coordinator, bid)
         out["sent"] += 1
     return out

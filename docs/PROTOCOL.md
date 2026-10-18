@@ -97,13 +97,18 @@ off.
 
 | Request | Body | Answer |
 | --- | --- | --- |
-| `POST /v1/enrol` (not signed as above: the card's signatures prove the keys) | `{"card": <card>, "signatures": {alg: base64}}` | `{"probe_id", "accepted"}` |
+| `POST /v1/enrol` (not signed as above: the card's signatures prove the keys) | `{"card_b64": <the card's canonical bytes, base64>, "signatures": {alg: base64}}` | `{"probe_id", "accepted"}` |
 | `GET /v1/tasks` | — | `{"tasks": [<task envelope>, ...], "next_poll_s": <seconds>}` |
-| `POST /v1/bundles` | `{"header": <header>, "signatures": {alg: base64}, "files": {sha256: base64}}` | `{"stored": <bundle id>}` |
+| `POST /v1/bundles` | `{"header_b64": <the header's exact bytes, base64>, "signatures": {alg: base64}, "files": {sha256: base64}}` | `{"stored": <bundle id>}` |
 | `POST /v1/refusals` | `{"task_id", "reason"}` | `{"ok": true}` |
 
+Signed things travel as their exact bytes (base64), never as JSON to be re-serialised, so a coordinator written in
+any language checks exactly what was signed. Tasks are served as the coordinator received them, byte for byte.
+
 The probe keeps every bundle until the coordinator has stored it, and sends unsent bundles first on every cycle,
-so a dropped connection loses nothing. `next_poll_s` is honoured within 60 to 3,600 seconds.
+so a dropped connection loses nothing. A bundle the coordinator refuses for good (HTTP 400, 409 or 413) is set
+aside, kept on disk and listed in the log, so it cannot block the bundles after it. An HTTP 401 makes the probe enrol
+again. `next_poll_s` is honoured within 60 to 3,600 seconds.
 
 ## What the host sees
 

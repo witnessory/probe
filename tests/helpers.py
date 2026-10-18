@@ -165,9 +165,10 @@ class FakeCoordinator:
                 body = self._body()
                 obj = json.loads(body)
                 if self.path == "/v1/enrol":
-                    card = obj["card"]
+                    raw = core.unb64(obj["card_b64"])
+                    card = json.loads(raw)
                     ok = (core.probe_id(card["public_keys"]["ed25519"]) == card["probe_id"]
-                          and core.verify_all(card["public_keys"], core.canonical(card), obj["signatures"]))
+                          and core.verify_all(card["public_keys"], raw, obj["signatures"]))
                     if not ok:
                         fake.errors.append("bad enrolment")
                         return self._answer(400, {"error": "bad card"})
@@ -177,8 +178,8 @@ class FakeCoordinator:
                 if not pid:
                     return self._answer(401, {"error": "unauthorised"})
                 if self.path == "/v1/bundles":
-                    h = obj["header"]
-                    hbody = core.canonical(h)
+                    hbody = core.unb64(obj["header_b64"])
+                    h = json.loads(hbody)
                     files_ok = all(core.sha256(core.unb64(obj["files"][f["sha256"]])) == f["sha256"]
                                    for f in h["files"])
                     if (h["probe_id"] != pid or not files_ok
