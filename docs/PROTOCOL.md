@@ -83,6 +83,10 @@ contacted; it is recorded as `refused_non_public`, and the rest of the task runs
 | `tls_pq` | 443 | Two TLS ClientHellos (one like a current browser, offering X25519MLKEM768 and X25519; one offering X25519MLKEM768 alone); only the server's first reply is read and no handshake is completed. Then one ordinary TLS connection to read the certificate's algorithms. | `level` (`ready`, `partly`, `not_yet`, `unknown`), both replies (group, TLS version, alert or error, a hash and copy of the raw reply), the certificate's signature and key algorithms |
 | `ssh_kex` | 22 | The probe's identification line and a key-exchange offer; reads the server's identification line and offer, then disconnects. No key exchange, no login. | The server's identification, the key-exchange, host-key, cipher and MAC methods it offers, and what a current OpenSSH client would select |
 
+Each observation's `outcome` is `measured` (the server answered, however negatively: an alert or a classical group
+is an answer), `no_answer` (the name has no address, or the connection timed out, was refused or reset) or
+`refused_non_public`. Only `measured` observations earn credit.
+
 If the bare name does not answer on port 443, `tls_pq` tries `www.<name>` once and says so.
 
 Timeouts: 8 seconds per connection for `tls_pq`, 6 for `ssh_kex`. Targets run with at most the host's concurrency

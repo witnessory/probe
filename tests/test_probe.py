@@ -140,7 +140,11 @@ class Measures(unittest.TestCase):
         measures.TLS_PORT = s.getsockname()[1]
         s.close()
         o = measures.tls_pq("site.test")
-        self.assertEqual(o["level"], "unknown")
+        self.assertEqual((o["level"], o["outcome"]), ("unknown", "no_answer"))
+        self.assertTrue(measures.failed(o))
+        measures.SSH_PORT = measures.TLS_PORT                       # silence earns nothing, on SSH too
+        o = measures.ssh_kex("site.test")
+        self.assertEqual(o["outcome"], "no_answer")
         self.assertTrue(measures.failed(o))
 
     def test_ssh(self):

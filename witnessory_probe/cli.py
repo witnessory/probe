@@ -29,7 +29,7 @@ SENTENCES = {
 
 
 def explain_tls(o):
-    if o["outcome"] != "measured":
+    if o["outcome"] == "refused_non_public":
         return f"{o['target']}: not measured ({o.get('error')})"
     lines = [f"{o['target']}: {o['level'].replace('_', ' ')}", SENTENCES[o["level"]]]
     b = o["browser"]
@@ -44,7 +44,7 @@ def explain_tls(o):
 
 def explain_ssh(o):
     s = o.get("ssh") or {}
-    if o["outcome"] != "measured" or s.get("outcome") != "kexinit":
+    if s.get("outcome") != "kexinit":
         return f"{o['target']} (SSH): not measured ({o.get('error') or s.get('error') or s.get('outcome')})"
     return (f"{o['target']} (SSH): a current OpenSSH client would use {s['reference_client_selects']} "
             f"({s['reference_client_class']}); the server offers {len(s['kex'] or [])} key-exchange methods.")
@@ -147,7 +147,7 @@ def cmd_trust(a):
         sys.exit("not a key set: needs public_keys and the key_id they hash to")
     keys = [k for k in p.settings()["trusted_task_keys"] if k["key_id"] != ks["key_id"]]
     p.update_settings(trusted_task_keys=keys + [{"key_id": ks["key_id"], "public_keys": ks["public_keys"]}])
-    print(f"trusting task key set {ks['key_id'][:16]}… ({', '.join(sorted(ks['public_keys']))})")
+    print(f"trusting task key set {ks['key_id'][:16]}... ({', '.join(sorted(ks['public_keys']))})")
     return 0
 
 

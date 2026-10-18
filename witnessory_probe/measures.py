@@ -98,7 +98,8 @@ def tls_pq(name):
             notes.append(f"{name} did not answer on port {port}; measured www.{name}")
     pq_only = hs.probe(tried, port, "pq_only", timeout, ip) if ip else dict(browser, profile="pq_only")
     level = tls_level(browser, pq_only)
-    return {"target": name, "name_measured": tried, "outcome": "measured", "level": level,
+    return {"target": name, "name_measured": tried, "outcome": "no_answer" if level == "unknown" else "measured",
+            "level": level,
             "browser": browser, "pq_only": pq_only,
             "certificate": certificate(tried, ip, port, timeout) if ip and level != "unknown" else None,
             "notes": notes}
@@ -116,9 +117,10 @@ def ssh_kex(name):
     except targets.Refused as e:
         return _refused(name, str(e))
     if not ip:
-        return {"target": name, "outcome": "measured", "ssh": {"outcome": "error", "error": "dns"}}
+        return {"target": name, "outcome": "no_answer", "ssh": {"outcome": "error", "error": "dns"}}
     obs = _ssh.observe(name, SSH_PORT, SSH_TIMEOUT, connect_to=ip)
-    return {"target": name, "outcome": "measured", "ssh": obs}
+    answered = obs["outcome"] in ("kexinit", "not_ssh2")
+    return {"target": name, "outcome": "measured" if answered else "no_answer", "ssh": obs}
 
 
 # ---------------------------------------------------------------- registry
@@ -130,9 +132,7 @@ MEASURES = {
 
 
 def failed(obs) -> bool:
-    """An observation that measured nothing (not a server's answer, however negative)."""
-    if obs.get("outcome") != "measured":
-        return True
-    if "level" in obs:
-        return obs["level"] == "unknown"
-    return (obs.get("ssh") or {}).get("outcome") == "error"
+    """An observation with no answer from the server. "measured" means the server answered, however negatively
+    (an alert, a classical group); "no_answer" (no address, a time-out, refused, reset) and "refused_non_public"
+    measured nothing, and earn no credit."""
+    return obs.get("outcome") != "measured"
