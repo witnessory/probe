@@ -17,13 +17,17 @@ witnessory-probe check example.org --ssh
 
 ## Run it as a probe
 
-```
-witnessory-probe init
-witnessory-probe run --coordinator https://<coordinator address>
-```
+| Where | How |
+| --- | --- |
+| Linux, Raspberry Pi | `sudo sh install/install.sh`: a system user, its own Python environment, a sandboxed service that starts at boot |
+| Windows | `powershell -ExecutionPolicy Bypass -File install\install.ps1`: for your user, no administrator rights, runs every hour without a window |
+| Docker | `docker build -t witnessory-probe .` then `docker run -d --restart unless-stopped -v witnessory-probe:/data witnessory-probe` |
+| By hand | `witnessory-probe start` |
 
-`init` creates the probe's keys and identity in `~/.witnessory-probe` (or `--home`). `run` takes measurement
-tasks from the Witnessory coordinator, runs them, and sends back signed results.
+Each makes the probe's keys and identity on first start and runs it. The probe comes set up: it knows the
+Witnessory coordinator and the keys its tasks are signed with. `witnessory-probe me` shows your probe's results,
+credits and its public page. Each installer removes itself with `--uninstall` (or `-Uninstall`), and `--purge` also
+removes the probe's keys and results.
 
 ## What it does on your network
 

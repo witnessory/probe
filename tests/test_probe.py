@@ -167,6 +167,14 @@ class Home(unittest.TestCase):
         with open(os.path.join(self.probe.bundles, bid + ".json"), "rb") as f:
             return json.loads(f.read())
 
+    def test_a_new_probe_ships_with_the_coordinator_and_its_task_keys(self):
+        s = self.probe.settings()
+        shipped = json.load(open(os.path.join(os.path.dirname(core.__file__), "defaults.json"), encoding="utf-8"))
+        self.assertEqual((s["coordinator"], s["trusted_task_keys"]), (shipped["coordinator"], shipped["trusted_task_keys"]))
+        for ks in s["trusted_task_keys"]:
+            self.assertEqual(core.key_id(ks["public_keys"]), ks["key_id"])
+            self.assertNotIn("PRIVATE", json.dumps(ks))
+
     def test_genesis_is_the_signed_card(self):
         p = self.probe
         bid = p.state["head"]

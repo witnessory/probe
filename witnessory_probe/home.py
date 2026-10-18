@@ -28,6 +28,13 @@ DEFAULT_SETTINGS = {
 }
 
 
+def shipped_defaults():
+    """The coordinator and its public task key set, shipped with this release (defaults.json): a new probe needs
+    no setup. A host can change either in settings.json."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "defaults.json")
+    return core.read_json(path, {}) or {}
+
+
 def default_home():
     return os.environ.get("WITNESSORY_PROBE_HOME") or os.path.join(os.path.expanduser("~"), ".witnessory-probe")
 
@@ -90,7 +97,9 @@ class Probe:
         for d in (self.home, self.bundles, self.objects):
             os.makedirs(d, exist_ok=True)
         if not os.path.exists(self.settings_path):
-            core.write_json(self.settings_path, DEFAULT_SETTINGS)
+            shipped = shipped_defaults()
+            core.write_json(self.settings_path, dict(DEFAULT_SETTINGS, coordinator=shipped.get("coordinator"),
+                                                     trusted_task_keys=shipped.get("trusted_task_keys", [])))
         self.keys = core.Keys.create(self.keys_dir)
         self.probe_id = self.keys.probe_id()
         self.card = {"type": "nullius.probe_card", "protocol": core.PROTOCOL, "probe_id": self.probe_id,

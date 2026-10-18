@@ -2,8 +2,10 @@
 witnessory-probe: the command line.
 
   witnessory-probe check example.org [--ssh] [--json]   measure one site now (no setup needed)
+  witnessory-probe start                                 set up this machine's probe if needed, then run
   witnessory-probe init                                  create this machine's probe (keys, identity)
-  witnessory-probe run --coordinator URL [--once]        take tasks from the coordinator, run them, send results
+  witnessory-probe run [--coordinator URL] [--once]      take tasks from the coordinator, run them, send results
+  witnessory-probe me                                    this probe's credits, results and public page
   witnessory-probe status | log [-n N] | pause | resume
   witnessory-probe trust KEYSET.json                     trust a coordinator task key set
 
@@ -16,7 +18,7 @@ import sys
 import time
 
 from . import VERSION, client, core, measures, targets
-from .home import Busy, Probe
+from .home import Busy, Probe, shipped_defaults
 
 SENTENCES = {
     "ready": "Connections from current browsers are protected against future quantum decryption "
@@ -71,6 +73,8 @@ def cmd_init(a):
         pid = p.init()
     except FileExistsError as e:
         sys.exit(str(e))
+    if a.coordinator:
+        p.update_settings(coordinator=a.coordinator)
     print(f"probe {pid} created in {p.home}; signing with {', '.join(sorted(p.keys.private))}")
     return 0
 
@@ -111,6 +115,31 @@ def cmd_run(a):
             time.sleep(wait)
     finally:
         p.release()
+
+
+def cmd_start(a):
+    p = Probe(a.home)
+    if not p.initialised:
+        print(f"probe {p.init()} created in {p.home}", flush=True)
+    a.coordinator, a.once = None, False
+    return cmd_run(a)
+
+
+def cmd_me(a):
+    p = _probe(a)
+    url = p.settings().get("coordinator")
+    if not url:
+        sys.exit("no coordinator set")
+    try:
+        me = client.Coordinator(url, p)._request("GET", "/v1/me")
+    except client.Unreachable as e:
+        sys.exit(f"coordinator unreachable ({e}); has this probe run yet?")
+    page = shipped_defaults().get("page")
+    print(f"probe      {me['probe_id']}\ncredits    {me['credits']}\nresults    {me['bundles']}\n"
+          f"since      {me['enrolled_utc'][:10]}\nnetwork    {me.get('network') or '-'} ({me.get('country') or '-'})"
+          + (f"\npage       {page}{me['probe_id']}" if page else ""))
+    print("(the network and country are shown only to you; the public page shows results and credits)")
+    return 0
 
 
 def cmd_status(a):
@@ -160,7 +189,10 @@ def main(argv=None):
     c.add_argument("domain")
     c.add_argument("--ssh", action="store_true", help="also measure SSH key exchange on port 22")
     c.add_argument("--json", action="store_true")
-    sub.add_parser("init", help="create this machine's probe")
+    sub.add_parser("start", help="set up this machine's probe if needed, then run")
+    i = sub.add_parser("init", help="create this machine's probe")
+    i.add_argument("--coordinator", help="another coordinator than the one this release names")
+    sub.add_parser("me", help="this probe's credits, results and public page")
     r = sub.add_parser("run", help="take and run tasks from the coordinator")
     r.add_argument("--coordinator")
     r.add_argument("--once", action="store_true", help="one cycle, then exit")
@@ -172,7 +204,8 @@ def main(argv=None):
     t = sub.add_parser("trust", help="trust a coordinator task key set")
     t.add_argument("keyset")
     a = p.parse_args(argv)
-    return {"check": cmd_check, "init": cmd_init, "run": cmd_run, "status": cmd_status, "log": cmd_log,
+    return {"check": cmd_check, "init": cmd_init, "start": cmd_start, "me": cmd_me, "run": cmd_run,
+            "status": cmd_status, "log": cmd_log,
             "pause": lambda a: cmd_pause(a, True), "resume": lambda a: cmd_pause(a, False),
             "trust": cmd_trust}[a.cmd](a)
 
