@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "witnessory-probe"
+dynamic = ["version"]
+description = "Measure how far the internet has moved to post-quantum cryptography, from your network"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+dependencies = ["cryptography>=44"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Internet",
+    "Topic :: Security :: Cryptography",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://witnessory.org"
+
+[project.scripts]
+witnessory-probe = "witnessory_probe.cli:main"
+
+[tool.setuptools]
+packages = ["witnessory_probe"]
+
+[tool.setuptools.dynamic]
+version = {attr = "witnessory_probe.VERSION"}
