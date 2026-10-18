@@ -1,0 +1,57 @@
+name: tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    # Runs only once the repository is public (public repositories' Actions are free).
+    if: ${{ !github.event.repository.private }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install .
+      - name: tests
+        shell: bash
+        run: |
+          rm -rf witnessory_probe   # test the installed package, not the source tree
+          PYTHONPATH=tests python -m unittest discover -s tests -v
+      - name: the installed command works
+        run: witnessory-probe --version
+  installer:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh installs, runs as a sandboxed service, and removes itself completely
+        run: |
+          python3 -m pip wheel --no-deps -w dist .
+          sudo PACKAGE="$PWD/$(ls dist/*.whl)" COORDINATOR=http://127.0.0.1:9 sh install/install.sh
+          sleep 5
+          systemctl is-active witnessory-probe
+          sudo -u witnessory-probe /opt/witnessory-probe/bin/witnessory-probe --home /var/lib/witnessory-probe status
+          sudo sh install/install.sh --purge
+          ! id witnessory-probe
+          test ! -e /opt/witnessory-probe && test ! -e /var/lib/witnessory-probe
+  docker:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the image builds, runs as non-root and keeps its keys in the volume
+        run: |
+          docker build -t probe-test .
+          docker run --rm probe-test --version
+          docker volume create probe-data
+          docker run --rm -v probe-data:/data probe-test init
+          docker run --rm -v probe-data:/data probe-test status
+          docker run --rm --entrypoint id probe-test -u | grep -v '^0$'
