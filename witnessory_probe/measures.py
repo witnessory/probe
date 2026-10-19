@@ -61,7 +61,7 @@ def certificate(name, ip, port, timeout):
         if key == "ecPublicKey":
             curve = cert.public_key().curve.name
             key = f"ecPublicKey ({CURVES.get(curve, curve)})"
-    except (OSError, ssl.SSLError, ValueError, TypeError, AttributeError) as e:
+    except Exception as e:                       # any certificate this code cannot read is recorded, never fatal
         return {"error": type(e).__name__}
     return {"signature_algorithm": sig, "key_algorithm": key, "post_quantum": is_pq(sig) or is_pq(key.split(" ")[0])}
 

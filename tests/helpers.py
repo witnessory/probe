@@ -128,6 +128,8 @@ class FakeCoordinator:
     def __init__(self):
         self.cards, self.bundles, self.refusals, self.queue, self.errors = {}, {}, [], [], []
         self.served_tasks = 0
+        self.polls = []
+        self.raw_answer = None                       # bytes to answer GET /v1/tasks with, verbatim
         fake = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -195,9 +197,16 @@ class FakeCoordinator:
                 self._answer(404, {"error": "not found"})
 
             def do_GET(self):
-                if self.path == "/v1/tasks" and self._authorised(b""):
+                if self.path.split("?")[0] == "/v1/tasks" and self._authorised(b""):
+                    fake.polls.append(self.path)
                     tasks, fake.queue = fake.queue, []
                     fake.served_tasks += len(tasks)
+                    if fake.raw_answer is not None:
+                        data = fake.raw_answer
+                        self.send_response(200)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        return self.wfile.write(data)
                     return self._answer(200, {"tasks": tasks, "next_poll_s": 120})
                 self._answer(401, {"error": "unauthorised"})
 

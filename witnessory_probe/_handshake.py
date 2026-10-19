@@ -3,24 +3,23 @@ TLS key exchange: which group a server selects for a browser-like ClientHello, a
 post-quantum-only one. Sends ClientHellos and reads only the server's reply; never completes a handshake,
 sends no application data, reads no content.
 
-Taken from the Witnessory observatory's handshake sensor (source 5f11eea3957e), measuring part only, so a
-probe's result means exactly what the observatory's figure means. Standard library only.
+The same measurement as the Witnessory observatory's handshake sensor, so a probe's result means exactly what
+the observatory's figure means. Standard library only. A server's reply is read up to one handshake message of
+at most 64 KB, and at most 2 KB of it is kept (its hash covers all of it).
 """
 
-import argparse
-import concurrent.futures as cf
 import hashlib
-import json
 import os
 import secrets
 import socket
-import ssl
-import sys
 import time
 
 INSTRUMENT = "handshake_sensor"
 INSTRUMENT_VERSION = "1.1.0"
 DEFINITION_VERSION = "1"
+
+MAX_MESSAGE = 64 * 1024        # largest handshake message read from a server
+RAW_KEEP = 2048               # bytes of a server's raw reply kept in the result
 
 HRR_RANDOM = bytes.fromhex("cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c")
 
@@ -89,10 +88,8 @@ X25519_P = 2 ** 255 - 19
 def x25519_public_key(private: bytes = None) -> bytes:
     """A genuine X25519 public key: X25519(k, 9) for a random private key k (RFC 7748, section 5).
 
-    Until 1.1.0 the sensor sent 32 random bytes. Servers that validate the client's key (canonical, on the curve)
-    rejected about three ClientHellos in four with illegal_parameter (seen on 2026-09-29: microsoft.com, 0 of 6),
-    and those hosts dropped out of the observed population instead of being counted. A real public key passes
-    every check (7 of 7 negotiated X25519MLKEM768)."""
+    Random bytes are not enough: servers that validate the client's key (canonical, on the curve) answer them with
+    illegal_parameter, and would drop out of the measurement instead of being counted."""
     k = bytearray(private if private is not None else os.urandom(32))   # a given key only in tests
     k[0] &= 248
     k[31] &= 127
@@ -119,7 +116,7 @@ def x25519_public_key(private: bytes = None) -> bytes:
 def key_share_for(group: int) -> bytes:
     if group == 0x001D:
         return x25519_public_key()
-    if group == 0x11EC:  # RFC 10024: ML-KEM-768 encapsulation key first, then X25519
+    if group == 0x11EC:  # draft-ietf-tls-ecdhe-mlkem: ML-KEM-768 encapsulation key first, then X25519
         return mlkem768_encapsulation_key() + x25519_public_key()
     raise ValueError(f"no key share generator for group 0x{group:04x}")
 
@@ -204,6 +201,8 @@ class HandshakeReader:
         while True:
             if len(self.buf) >= 4:
                 ml = int.from_bytes(self.buf[1:4], "big")
+                if ml > MAX_MESSAGE:
+                    raise ValueError("oversized handshake message")
                 if len(self.buf) >= 4 + ml:
                     mt, body = self.buf[0], self.buf[4:4 + ml]
                     self.buf = self.buf[4 + ml:]
@@ -247,7 +246,7 @@ def probe(host: str, port: int, profile: str, timeout: float = 8.0, connect_to: 
     t0 = time.monotonic()
     obs = {"profile": profile, "outcome": None, "tls_version": None, "cipher": None, "group": None,
            "group_name": None, "group_class": None, "alert": None, "error": None, "ip": None,
-           "raw_reply_sha256": None, "raw_reply_hex": None, "ms": None}
+           "raw_reply_sha256": None, "raw_reply_hex": None, "raw_truncated": False, "ms": None}
     sock = None
     try:
         sock = socket.create_connection((connect_to or host, port), timeout=timeout)
@@ -295,7 +294,8 @@ def probe(host: str, port: int, profile: str, timeout: float = 8.0, connect_to: 
             elif obs["group_name"] in ("rsa_key_transport", "non_ec_dhe"):
                 obs["group_class"] = "classical"
         obs["raw_reply_sha256"] = hashlib.sha256(rd.raw).hexdigest()
-        obs["raw_reply_hex"] = rd.raw.hex()
+        obs["raw_reply_hex"] = rd.raw[:RAW_KEEP].hex()
+        obs["raw_truncated"] = len(rd.raw) > RAW_KEEP
     except socket.gaierror:
         obs["outcome"], obs["error"] = "error", "dns"
     except (socket.timeout, TimeoutError):
@@ -319,16 +319,3 @@ def probe(host: str, port: int, profile: str, timeout: float = 8.0, connect_to: 
 
 
 NETWORK_FAIL = {"dns", "timeout", "refused", "reset_or_closed"}
-
-
-def observe_host(rank, domain, port, timeout, try_www=True, connect_to=None, keep_raw=True):
-    """Probe a host with both profiles. Falls back to www.<domain> if the bare name fails at network level."""
-    name = domain
-    b = probe(name, port, "browser", timeout, connect_to)
-    if try_www and b["outcome"] == "error" and b["error"] in NETWORK_FAIL and not domain.startswith("www."):
-        name = "www." + domain
-        b = probe(name, port, "browser", timeout, connect_to)
-    q = probe(name, port, "pq_only", timeout, connect_to)
-    if not keep_raw:
-        b.pop("raw_reply_hex"); q.pop("raw_reply_hex")
-    return {"rank": rank, "domain": domain, "name_probed": name, "port": port, "browser": b, "pq_only": q}

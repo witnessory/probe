@@ -169,7 +169,8 @@ class Home(unittest.TestCase):
 
     def test_a_new_probe_ships_with_the_coordinator_and_its_task_keys(self):
         s = self.probe.settings()
-        shipped = json.load(open(os.path.join(os.path.dirname(core.__file__), "defaults.json"), encoding="utf-8"))
+        with open(os.path.join(os.path.dirname(core.__file__), "defaults.json"), encoding="utf-8") as f:
+            shipped = json.load(f)
         self.assertEqual((s["coordinator"], s["trusted_task_keys"]), (shipped["coordinator"], shipped["trusted_task_keys"]))
         for ks in s["trusted_task_keys"]:
             self.assertEqual(core.key_id(ks["public_keys"]), ks["key_id"])

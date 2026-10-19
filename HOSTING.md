@@ -13,14 +13,23 @@ devices or anything anyone on your network does.
 
 ## What Witnessory receives
 
-- **Your probe's results**, signed by your probe: what each public server answered.
-- **Your probe's public keys and its identity card** (an ID that is a hash of its key, the software version, the
-  Python version).
+- **Your probe's results**, signed by your probe: what each public server answered, with the server's address and
+  how long it took to answer.
+- **Your probe's public keys and its identity card** (an ID that is a hash of its key, when it was made, the
+  software version); each result also names the probe and Python versions.
 - **The network your probe connects from**: Cloudflare, which runs the coordinator, tells Witnessory the network's
   number and name (for example a hosting company or internet provider) and its country. Witnessory keeps those
-  to weigh results fairly ("one network, one vote") and to know where on the internet a measurement was made.
-- **Not your IP address.** Your probe's address reaches Cloudflare, as with any web request, and Witnessory does
-  not store it.
+  with each result, to weigh results fairly ("one network, one vote") and to know where on the internet a
+  measurement was made.
+- **Not your IP address.** Your probe's address reaches Cloudflare, as with any web request; Witnessory does not
+  store it, and its coordinator keeps no request logs.
+
+## What others see
+
+Every server your probe measures sees a connection from your address, as with any visit to a website. SSH servers
+also see the probe's identification, `SSH-2.0-witnessory_probe https://witnessory.org/probe.html`, so their
+operators can see what the connection was. Some network operators watch for connections to many SSH servers; if
+that could trouble your provider, turn SSH off (`"disabled_measures": ["ssh_kex"]` in `settings.json`).
 
 ## What is public
 

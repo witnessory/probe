@@ -12,6 +12,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import time
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization as ser
@@ -59,7 +60,14 @@ def write_atomic(path, data: bytes):
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    for attempt in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:                  # Windows: another program (often antivirus) has the file open
+            if attempt == 9:
+                raise
+            time.sleep(0.2)
 
 
 def write_json(path, obj):
@@ -167,11 +175,13 @@ def verify_all(public_keys: dict, data: bytes, signatures: dict) -> bool:
     """True only if every key in the set has a valid signature (a hybrid set needs both)."""
     if not public_keys:
         return False
+    if not isinstance(signatures, dict):
+        return False
     for alg, pem in public_keys.items():
         s = signatures.get(alg)
         try:
-            if not s or not verify(pem, data, unb64(s)):
+            if not isinstance(s, str) or not s or not verify(pem, data, unb64(s)):
                 return False
-        except ValueError:
+        except (ValueError, TypeError):
             return False
     return True

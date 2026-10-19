@@ -35,6 +35,34 @@ def shipped_defaults():
     return core.read_json(path, {}) or {}
 
 
+LOG_MAX = 5 << 20
+RESULT_MAX = 300_000          # bytes of one result: always within what the coordinator accepts
+RAW_FIELDS = ("raw_reply_hex", "kexinit_hex")
+NO_MLDSA = ("this machine's cryptography library cannot sign with ML-DSA, which the probe needs: upgrade it "
+            "(pip install --upgrade 'cryptography>=48'; it needs a 64-bit system) and try again")
+
+
+def fit(result):
+    """The result as bytes, within RESULT_MAX: copies of servers' raw replies are dropped first (their hashes stay),
+    then, if still too large, the last observations (counted in observations_omitted)."""
+    data = core.canonical(result)
+    if len(data) <= RESULT_MAX:
+        return data
+    for o in result["observations"]:
+        for part in [o] + [v for v in o.values() if isinstance(v, dict)]:
+            for k in RAW_FIELDS:
+                if part.get(k) is not None:
+                    part[k] = None
+                    part["raw_dropped"] = True
+    data = core.canonical(result)
+    obs = result["observations"]
+    while len(data) > RESULT_MAX and obs:
+        obs.pop()
+        result["observations_omitted"] = result.get("observations_omitted", 0) + 1
+        data = core.canonical(result)
+    return data
+
+
 def default_home():
     return os.environ.get("WITNESSORY_PROBE_HOME") or os.path.join(os.path.expanduser("~"), ".witnessory-probe")
 
@@ -94,8 +122,19 @@ class Probe:
     def init(self):
         if self.initialised:
             raise FileExistsError(f"a probe already lives in {self.home}")
+        if not core.has_mldsa():
+            raise RuntimeError(NO_MLDSA)
         for d in (self.home, self.bundles, self.objects):
             os.makedirs(d, exist_ok=True)
+        lock = Lock(os.path.join(self.home, "probe.lock"))         # two first runs must not make two probes
+        try:
+            if os.path.exists(os.path.join(self.home, "card.json")):
+                raise FileExistsError(f"a probe already lives in {self.home}")
+            return self._init()
+        finally:
+            lock.release()
+
+    def _init(self):
         if not os.path.exists(self.settings_path):
             shipped = shipped_defaults()
             core.write_json(self.settings_path, dict(DEFAULT_SETTINGS, coordinator=shipped.get("coordinator"),
@@ -112,6 +151,7 @@ class Probe:
 
     def acquire(self):
         self.lock = Lock(os.path.join(self.home, "probe.lock"))
+        self.state = core.read_json(os.path.join(self.home, "state.json"), self.state)   # as of now, under the lock
         self.reconcile()
 
     def release(self):
@@ -137,15 +177,22 @@ class Probe:
 
     def reconcile(self):
         """Rebuild position and head from the bundles actually signed (state.json is only a cache): a probe
-        must never sign two different bundles at the same position."""
-        best = None
+        must never sign two different bundles at the same position. A bundle sealed after the cache was last saved
+        (the process stopped in between) is queued to be sent; an unreadable header is skipped and logged."""
+        found = []
         for fn in os.listdir(self.bundles):
-            if fn.endswith(".json"):
-                h = core.read_json(os.path.join(self.bundles, fn))
-                if best is None or h["seq"] > best[0]:
-                    best = (h["seq"], fn[:-5])
-        if best and best[0] >= self.state["seq"]:
-            self.state["seq"], self.state["head"] = best[0] + 1, best[1]
+            if fn.endswith(".json") and fn.count(".") == 1:
+                try:
+                    h = core.read_json(os.path.join(self.bundles, fn))
+                    found.append((int(h["seq"]), fn[:-5]))
+                except (OSError, ValueError, KeyError, TypeError):
+                    self.log({"task_id": None, "measure": None, "targets": [], "outcome": f"unreadable bundle {fn}"})
+        later = sorted(x for x in found if x[0] >= self.state["seq"])
+        if later:
+            for _, bid in later:
+                if bid not in self.state["unsent"]:
+                    self.state["unsent"].append(bid)
+            self.state["seq"], self.state["head"] = later[-1][0] + 1, later[-1][1]
             self.save_state()
 
     # ------------------------------------------------------------ sealing
@@ -201,9 +248,22 @@ class Probe:
             self.state["unsent"].remove(bid)
             self.save_state()
 
+    def set_aside(self, bid, reason):
+        """A bundle that cannot be sent: kept on disk, listed in the state and the log, no longer queued."""
+        self.state.setdefault("rejected", []).append({"bundle": bid, "reason": reason[:200]})
+        self.log({"task_id": None, "measure": None, "targets": [], "outcome": f"bundle {bid[:12]} set aside: {reason}"})
+        self.mark_sent(bid)
+        self.save_state()
+
     # ------------------------------------------------------------ the host's log and limits
     def log(self, entry):
-        with open(os.path.join(self.home, "log.jsonl"), "a", encoding="utf-8") as f:
+        path = os.path.join(self.home, "log.jsonl")
+        try:
+            if os.path.getsize(path) > LOG_MAX:
+                os.replace(path, path + ".1")              # one older log is kept; the host's disk stays small
+        except OSError:
+            pass
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(dict(entry, time_utc=core.iso(core.utc_now())), sort_keys=True) + "\n")
 
     def read_log(self, n=20):
@@ -246,15 +306,23 @@ class Probe:
         self.spend(len(task["targets"]))
         self.save_state()
         workers = max(1, min(int(self.settings().get("concurrency", 4)), 16))
+
+        def one(target):
+            try:
+                return m["run"](target)
+            except Exception as e:                       # one site's surprise never sinks the task
+                return {"target": target, "outcome": "no_answer", "error": f"probe_{type(e).__name__}"}
+
         with cf.ThreadPoolExecutor(max_workers=workers) as pool:
-            observations = list(pool.map(m["run"], task["targets"]))
+            observations = list(pool.map(one, task["targets"]))
         bad = sum(measures.failed(o) for o in observations)
         status = "ok" if bad == 0 else ("failed" if bad == len(observations) else "partial")
         result = {"type": "witnessory.result", "version": 1, "measure": task["measure"],
                   "measure_version": m["version"], "task_id": task["task_id"],
                   "started_utc": core.iso(started), "finished_utc": core.iso(core.utc_now()),
                   "observations": observations}
-        bid = self.seal(task["measure"], status, [("result", "result.json", core.canonical(result))],
+        data = fit(result)
+        bid = self.seal(task["measure"], status, [("result", "result.json", data)],
                         {"name": f"witnessory-probe/{task['measure']}", "version": m["version"]}, started,
                         {"task_id": task["task_id"], "task_sha256": envelope_sha256})
         self.log({"task_id": task["task_id"], "measure": task["measure"], "targets": task["targets"],

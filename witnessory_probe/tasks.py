@@ -10,7 +10,7 @@ import re
 
 from . import core, measures, targets
 
-MAX_TARGETS = 1000                      # never more per task, whatever the host allows
+MAX_TARGETS = 200                       # never more per task, whatever the host allows
 MAX_VALIDITY = dt.timedelta(days=7)
 CLOCK_ALLOWANCE = dt.timedelta(minutes=5)
 TASK_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -31,7 +31,16 @@ def _time(task, field):
 
 def check(envelope, trusted_keys, probe_id, settings, seen, now=None):
     """trusted_keys: [{"key_id", "public_keys": {alg: pem}}]; settings: the host's configuration;
-    seen: task IDs already run."""
+    seen: task IDs already run. Anything unexpected in the envelope is a refusal, never an error."""
+    try:
+        return _check(envelope, trusted_keys, probe_id, settings, seen, now)
+    except Rejected:
+        raise
+    except Exception:
+        raise Rejected("malformed")
+
+
+def _check(envelope, trusted_keys, probe_id, settings, seen, now=None):
     now = now or core.utc_now()
     if not isinstance(envelope, dict) or not isinstance(envelope.get("task"), dict):
         raise Rejected("malformed")
@@ -41,9 +50,12 @@ def check(envelope, trusted_keys, probe_id, settings, seen, now=None):
         raise Rejected("untrusted key")
     if core.key_id(key_set["public_keys"]) != key_set["key_id"]:
         raise Rejected("untrusted key")
-    if not core.verify_all(key_set["public_keys"], core.canonical(task), envelope.get("signatures") or {}):
+    sigs = envelope.get("signatures")
+    if not isinstance(sigs, dict) or not core.verify_all(key_set["public_keys"], core.canonical(task), sigs):
         raise Rejected("bad signature")
-    if set(task) != FIELDS or task["type"] != "witnessory.task" or task["version"] != 1:
+    if set(task) != FIELDS or task["type"] != "witnessory.task" or type(task["version"]) is not int:
+        raise Rejected("malformed")
+    if task["version"] != 1:
         raise Rejected("malformed")
     if not isinstance(task["task_id"], str) or not TASK_ID.match(task["task_id"]):
         raise Rejected("malformed")

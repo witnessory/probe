@@ -6,7 +6,8 @@
 #
 # What it does: puts the probe in its own Python environment in %LOCALAPPDATA%\witnessory-probe, keeps the probe's
 # keys and results in %USERPROFILE%\.witnessory-probe, and adds a scheduled task "Witnessory probe" that runs one
-# cycle every hour without opening a window. Nothing else is changed. docs\PROTOCOL.md says what the probe does.
+# cycle every hour while you are signed in, without opening a window. Nothing else is changed. docs\PROTOCOL.md says
+# what the probe does.
 # Needs Python 3.10 or newer (python.org, or the Microsoft Store).
 param(
     [switch]$Uninstall,
@@ -24,9 +25,19 @@ $PythonW = Join-Path $Venv "Scripts\pythonw.exe"
 
 if ($Uninstall -or $Purge) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    if (Test-Path $Prefix) { Remove-Item -Recurse -Force $Prefix }
+    # Only folders this installer made: the program's must hold the probe's command, the probe's its card.
+    if (Test-Path $Prefix) {
+        if (-not (Test-Path $Exe)) { throw "$Prefix does not look like the probe's program folder; not removed." }
+        Remove-Item -Recurse -Force $Prefix
+    }
     if ($Purge) {
-        if (Test-Path $ProbeHome) { Remove-Item -Recurse -Force $ProbeHome }
+        if (Test-Path $ProbeHome) {
+            $empty = -not (Get-ChildItem -Force $ProbeHome | Select-Object -First 1)
+            if (-not ((Test-Path (Join-Path $ProbeHome "card.json")) -or $empty)) {
+                throw "$ProbeHome does not look like the probe's folder; not removed."
+            }
+            Remove-Item -Recurse -Force $ProbeHome
+        }
         Write-Output "Witnessory probe removed, with its keys and results."
     } else {
         Write-Output "Witnessory probe removed. Its keys and results are kept in $ProbeHome (remove with -Purge)."
@@ -50,10 +61,13 @@ Write-Output "Installing the probe in $Prefix ..."
 New-Item -ItemType Directory -Force $Prefix | Out-Null
 & $PyExe @PyArgs -m venv $Venv
 & (Join-Path $Venv "Scripts\python.exe") -m pip install --quiet --upgrade $Package
+if ($LASTEXITCODE -ne 0) { throw "Installing the probe failed (pip exit code $LASTEXITCODE)." }
 & $Exe --version
+if ($LASTEXITCODE -ne 0) { throw "The installed probe does not start." }
 
 if (-not (Test-Path (Join-Path $ProbeHome "card.json"))) {
     & $Exe --home $ProbeHome init
+    if ($LASTEXITCODE -ne 0) { throw "Setting up the probe failed (see the message above)." }
 }
 
 if (-not $NoTask) {
@@ -63,7 +77,7 @@ if (-not $NoTask) {
         -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -MultipleInstances IgnoreNew
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
         -Description "Witnessory probe: measures public servers' post-quantum readiness (docs\PROTOCOL.md)" -Force | Out-Null
-    Write-Output "The probe runs every hour (scheduled task '$TaskName')."
+    Write-Output "The probe runs every hour while you are signed in to Windows (scheduled task '$TaskName')."
 }
 
 Write-Output ""

@@ -1,7 +1,9 @@
 name: tests
 on:
   push:
+    branches: ["**"]          # tags run these through release.yml
   pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:

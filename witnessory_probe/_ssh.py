@@ -2,26 +2,24 @@
 SSH key exchange: the server's identification line and its KEXINIT (the methods it offers). Sends its own
 identification and KEXINIT, reads the server's, and disconnects: no key exchange, no login.
 
-Taken from the Witnessory observatory's ssh sensor (source 5f11eea3957e), measuring part only, so a
-probe's result means exactly what the observatory's figure means. Standard library only.
+The same measurement as the Witnessory observatory's ssh sensor, so a probe's result means exactly what the
+observatory's figure means. The identification line names the probe and links to what it is. Standard library only.
 """
 
-import argparse
-import concurrent.futures as cf
 import hashlib
-import json
 import os
 import socket
 import struct
-import sys
 import time
 
 INSTRUMENT = "ssh_sensor"
 INSTRUMENT_VERSION = "1.1.0"
 DEFINITION_VERSION = "1"
-CLIENT_ID = "SSH-2.0-witnessory_probe"
+CLIENT_ID = "SSH-2.0-witnessory_probe https://witnessory.org/probe.html"
 MSG_KEXINIT = 20
-MAX_PACKET = 256 * 1024
+MAX_PACKET = 35000            # the size every SSH implementation must accept (RFC 4253)
+MAX_NAMES, MAX_NAME = 64, 128   # names kept per list, and characters per name
+KEXINIT_KEEP = 4096          # bytes of the server's offer kept in the result
 MAX_PRE_BANNER_LINES = 32
 
 # Default key-exchange order of the OpenSSH 10.2p1 client (`ssh -G`), used as the reference client
@@ -93,7 +91,7 @@ def parse_kexinit(payload: bytes) -> dict:
         raw = payload[i + 4:i + 4 + n]
         if len(raw) != n:
             raise ValueError("truncated name-list")
-        out[f] = [x for x in raw.decode("ascii", "replace").split(",") if x]
+        out[f] = [x[:MAX_NAME] for x in raw.decode("ascii", "replace").split(",") if x][:MAX_NAMES]
         i += 4 + n
     out["first_kex_packet_follows"] = bool(payload[i]) if i < len(payload) else None
     return out
@@ -172,7 +170,7 @@ def observe(host, port=22, timeout=6.0, connect_to=None, keep_raw=True):
         obs["reference_client_class"] = kex_class(pick) if pick else "no_common_method"
         obs["kexinit_sha256"] = hashlib.sha256(payload).hexdigest()
         if keep_raw:
-            obs["kexinit_hex"] = payload.hex()
+            obs["kexinit_hex"] = payload.hex() if len(payload) <= KEXINIT_KEEP else None
         obs["outcome"] = "kexinit"
     except socket.gaierror:
         obs["outcome"], obs["error"] = "error", "dns"
@@ -194,13 +192,3 @@ def observe(host, port=22, timeout=6.0, connect_to=None, keep_raw=True):
                 pass
         obs["ms"] = round(1000 * (time.monotonic() - t0))
     return obs
-
-
-def software_family(banner):
-    """'SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5' -> ('OpenSSH', 'OpenSSH_9.6p1')."""
-    if not banner:
-        return None, None
-    sw = banner.split("-", 2)[2] if banner.count("-") >= 2 else banner
-    ver = sw.split(" ")[0]
-    fam = ver.split("_")[0].split("-")[0] or "unknown"
-    return fam, ver

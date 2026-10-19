@@ -14,8 +14,10 @@ The probe's folder is ~/.witnessory-probe, or --home, or WITNESSORY_PROBE_HOME.
 
 import argparse
 import json
+import signal
 import sys
 import time
+import traceback
 
 from . import VERSION, client, core, measures, targets
 from .home import Busy, Probe, shipped_defaults
@@ -71,7 +73,7 @@ def cmd_init(a):
     p = Probe(a.home)
     try:
         pid = p.init()
-    except FileExistsError as e:
+    except (FileExistsError, RuntimeError, Busy) as e:
         sys.exit(str(e))
     if a.coordinator:
         p.update_settings(coordinator=a.coordinator)
@@ -97,10 +99,24 @@ def cmd_run(a):
         p.acquire()
     except Busy as e:
         sys.exit(str(e))
-    coord = client.Coordinator(url, p)
+    try:
+        coord = client.Coordinator(url, p)
+    except ValueError as e:
+        p.release()
+        sys.exit(str(e))
+    stop = []
+
+    def on_signal(signum, frame):                 # finish the current step, then stop (never mid-seal)
+        stop.append(signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, on_signal)
+        except (ValueError, OSError):
+            pass
     wait = client.POLL_DEFAULT
     try:
-        while True:
+        while not stop:
             try:
                 r = client.cycle(p, coord)
                 wait = r["next_poll_s"]
@@ -108,11 +124,24 @@ def cmd_run(a):
                       f"sent {r['sent']}", flush=True)
             except client.Unreachable as e:
                 print(f"{core.iso(core.utc_now())} coordinator unreachable ({e}); trying again later", flush=True)
+                wait = client.POLL_DEFAULT
+                if a.once:
+                    return 1
+            except Exception:                     # a bug must not crash-loop the host's service: log, wait, retry
+                print(f"{core.iso(core.utc_now())} unexpected error; trying again later\n{traceback.format_exc()}",
+                      flush=True)
+                p.log({"task_id": None, "measure": None, "targets": [], "outcome": "unexpected error (see output)"})
+                wait = client.POLL_DEFAULT
                 if a.once:
                     return 1
             if a.once:
                 return 0
-            time.sleep(wait)
+            for _ in range(int(wait)):
+                if stop:
+                    break
+                time.sleep(1)
+        print(f"{core.iso(core.utc_now())} stopped", flush=True)
+        return 0
     finally:
         p.release()
 
@@ -120,7 +149,12 @@ def cmd_run(a):
 def cmd_start(a):
     p = Probe(a.home)
     if not p.initialised:
-        print(f"probe {p.init()} created in {p.home}", flush=True)
+        try:
+            print(f"probe {p.init()} created in {p.home}", flush=True)
+        except (RuntimeError, Busy) as e:
+            sys.exit(str(e))
+        except FileExistsError:
+            pass                                  # another start made it a moment ago
     a.coordinator, a.once = None, False
     return cmd_run(a)
 
