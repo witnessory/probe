@@ -33,16 +33,22 @@ that could trouble your provider, turn SSH off (`"disabled_measures": ["ssh_kex"
 
 ## What is public
 
-Each probe has a page (`witnessory-probe me` shows its address) with its ID, start date, number of results and
-credits. It never shows the network, country or address. Results are published in aggregate (for example "this
-share of popular sites is ready"), never as "probe X on network Y".
+- **Your probe's page** (`witnessory-probe me` shows its address): its ID, start date, last seen date, results,
+  credits, and the network (number and name) and country it measures from.
+- **The probe map** (https://coordinator.witnessory.org/probes): probes counted by country and by network, and the
+  probes with the most credits, with their network and country.
+- **Results**: what the measured servers offered, with the network and country they were measured from (for example
+  "from this provider's network, this server chose a post-quantum key exchange"), and possibly the probe that made
+  them.
+- **Never your address.** Witnessory does not have it. On a home connection the network is your internet provider
+  and the country is where you are; nothing narrower is published. If that is a problem for you, run the probe
+  somewhere else (a cloud machine, for example), or not at all.
 
 ## How results are used
 
 Results feed Witnessory's public view of the internet's move to post-quantum cryptography, which is free, and
 Witnessory's services, which may be paid (for example monitoring for organisations, or data for researchers). By
-running a probe you allow Witnessory to use your probe's results this way. Witnessory keeps the network and
-country of a probe private to Witnessory and its own processing.
+running a probe you allow Witnessory to use and publish your probe's results, network and country this way.
 
 ## Credits
 
