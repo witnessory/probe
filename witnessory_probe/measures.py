@@ -12,7 +12,7 @@ from cryptography import x509
 
 from . import _handshake as hs
 from . import _ssh
-from . import targets
+from . import core, targets
 
 # Certificate algorithm names, as the observatory names them (so results compare directly).
 OIDS = {
@@ -129,6 +129,29 @@ MEASURES = {
     "tls_pq": {"version": "1", "port": TLS_PORT, "params": {}, "run": tls_pq},
     "ssh_kex": {"version": "1", "port": SSH_PORT, "params": {}, "run": ssh_kex},
 }
+
+
+OBS_MAX = 8192                # bytes of one observation; a larger one keeps its hashes and counts only
+
+
+def bounded(obs):
+    """One observation within OBS_MAX: no single server can crowd out the others."""
+    if not isinstance(obs, dict) or len(core.canonical(obs)) <= OBS_MAX:
+        return obs
+    s = obs.get("ssh")
+    if isinstance(s, dict):
+        for k in ("kex", "host_key", "enc_s2c", "mac_s2c"):
+            if isinstance(s.get(k), list):
+                s[k] = s[k][:16]
+        s["kexinit_hex"] = None
+        s["truncated"] = True
+    for part in [obs] + [v for v in obs.values() if isinstance(v, dict)]:
+        if part.get("raw_reply_hex") is not None:
+            part["raw_reply_hex"] = None
+            part["raw_dropped"] = True
+    if len(core.canonical(obs)) > OBS_MAX:
+        return {"target": obs.get("target"), "outcome": obs.get("outcome"), "level": obs.get("level"), "truncated": True}
+    return obs
 
 
 def failed(obs) -> bool:

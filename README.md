@@ -35,9 +35,9 @@ removes the probe's keys and results.
 - **Only published measurements.** The probe runs only the measurement types in this code: a TLS key-exchange
   check on port 443 and an SSH key-exchange check on port 22. A task can choose which public sites to measure,
   never what to run. New kinds of measurement come only with a new release you can read.
-- **Public servers only.** Targets are public domain names. The probe never connects to a private or local
-  address (including NAT64 and your own IPv6 network), never to a name that resolves to one, and never follows a
-  redirect from the coordinator.
+- **Public servers only.** Targets are public domain names. The probe never connects to a private, local, shared or
+  reserved address, to an IPv6 address that can carry one (such as NAT64), or to an address in its own IPv6 subnet;
+  never to a name that resolves to any of these; and never follows a redirect from the coordinator.
 - **It measures servers, not you.** It reads how servers are configured: which key exchange they choose and what
   their certificate uses. It does not look at your traffic, your devices, or anything anyone on your network does.
 - **What others see.** Each server measured sees a connection from your address, as with any visit; SSH servers

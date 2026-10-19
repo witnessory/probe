@@ -8,6 +8,7 @@ observatory's figure means. The identification line names the probe and links to
 
 import hashlib
 import os
+import re
 import socket
 import struct
 import time
@@ -18,7 +19,8 @@ DEFINITION_VERSION = "1"
 CLIENT_ID = "SSH-2.0-witnessory_probe https://witnessory.org/probe.html"
 MSG_KEXINIT = 20
 MAX_PACKET = 35000            # the size every SSH implementation must accept (RFC 4253)
-MAX_NAMES, MAX_NAME = 64, 128   # names kept per list, and characters per name
+MAX_NAMES = 64                 # names kept per list
+NAME = re.compile(r"^[\x21-\x7e]{1,64}$")   # an algorithm name: printable ASCII, no spaces
 KEXINIT_KEEP = 4096          # bytes of the server's offer kept in the result
 MAX_PRE_BANNER_LINES = 32
 
@@ -91,7 +93,7 @@ def parse_kexinit(payload: bytes) -> dict:
         raw = payload[i + 4:i + 4 + n]
         if len(raw) != n:
             raise ValueError("truncated name-list")
-        out[f] = [x[:MAX_NAME] for x in raw.decode("ascii", "replace").split(",") if x][:MAX_NAMES]
+        out[f] = [x for x in raw.decode("ascii", "replace").split(",") if NAME.match(x)][:MAX_NAMES]
         i += 4 + n
     out["first_kex_packet_follows"] = bool(payload[i]) if i < len(payload) else None
     return out

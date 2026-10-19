@@ -44,20 +44,31 @@ NO_MLDSA = ("this machine's cryptography library cannot sign with ML-DSA, which 
 
 
 def fit(result):
-    """The result as bytes, within RESULT_MAX: copies of servers' raw replies are dropped first (their hashes stay),
-    then, if still too large, the last observations (counted in observations_omitted)."""
+    """The result as bytes, within RESULT_MAX. If it is larger: copies of servers' raw replies are dropped, largest
+    first, until it fits (their hashes stay); then, if still too large, the largest observations are reduced to their
+    target and outcome (counted in observations_omitted), so a few oversized answers never push out the others."""
     data = core.canonical(result)
     if len(data) <= RESULT_MAX:
         return data
-    for o in result["observations"]:
-        for part in [o] + [v for v in o.values() if isinstance(v, dict)]:
+    obs = result["observations"]
+    size = [len(core.canonical(o)) for o in obs]
+    for i in sorted(range(len(obs)), key=lambda i: -size[i]):
+        for part in [obs[i]] + [v for v in obs[i].values() if isinstance(v, dict)]:
             for k in RAW_FIELDS:
                 if part.get(k) is not None:
                     part[k] = None
                     part["raw_dropped"] = True
-    data = core.canonical(result)
-    obs = result["observations"]
-    while len(data) > RESULT_MAX and obs:
+        data = core.canonical(result)
+        if len(data) <= RESULT_MAX:
+            return data
+    size = [len(core.canonical(o)) for o in obs]
+    for i in sorted(range(len(obs)), key=lambda i: -size[i]):
+        if len(data) <= RESULT_MAX:
+            break
+        obs[i] = {"target": str(obs[i].get("target"))[:253], "outcome": obs[i].get("outcome"), "omitted": True}
+        result["observations_omitted"] = result.get("observations_omitted", 0) + 1
+        data = core.canonical(result)
+    while len(data) > RESULT_MAX and obs:                # never reached with real targets; the bound holds anyway
         obs.pop()
         result["observations_omitted"] = result.get("observations_omitted", 0) + 1
         data = core.canonical(result)
@@ -111,8 +122,7 @@ class Probe:
         if self.card:
             self.keys = core.Keys(self.keys_dir)
             self.probe_id = self.card["probe_id"]
-        self.state = core.read_json(os.path.join(self.home, "state.json"),
-                                    {"seq": 0, "head": None, "unsent": [], "seen": {}, "hour": None})
+        self.state = self._load_state()
         self.lock = None
 
     # ------------------------------------------------------------ setup
@@ -136,6 +146,7 @@ class Probe:
             lock.release()
 
     def _init(self):
+        self.state = {"seq": 0, "head": None, "unsent": [], "seen": {}, "hour": None}   # a new probe starts clean
         if not os.path.exists(self.settings_path):
             shipped = shipped_defaults()
             core.write_json(self.settings_path, dict(DEFAULT_SETTINGS, coordinator=shipped.get("coordinator"),
@@ -150,9 +161,20 @@ class Probe:
         core.write_atomic(os.path.join(self.home, "card.json"), card_bytes)
         return self.probe_id
 
+    def _load_state(self):
+        """state.json is only a cache: missing or unreadable, it starts empty and reconcile() rebuilds it."""
+        fresh = {"seq": 0, "head": None, "unsent": [], "seen": {}, "hour": None}
+        try:
+            s = core.read_json(os.path.join(self.home, "state.json"), None)
+        except (ValueError, OSError):
+            s = None
+        if not isinstance(s, dict) or not isinstance(s.get("seq"), int) or not isinstance(s.get("unsent"), list):
+            return fresh
+        return dict(fresh, **s)
+
     def acquire(self):
         self.lock = Lock(os.path.join(self.home, "probe.lock"))
-        self.state = core.read_json(os.path.join(self.home, "state.json"), self.state)   # as of now, under the lock
+        self.state = self._load_state()                                     # as of now, under the lock
         self.reconcile()
 
     def release(self):
@@ -234,10 +256,9 @@ class Probe:
             raw = f.read()
         header = json.loads(raw)
         sigs = {}
-        for fn in os.listdir(self.bundles):
-            if fn.startswith(bid + ".") and fn.endswith(".sig"):
-                with open(os.path.join(self.bundles, fn), "rb") as f:
-                    sigs[fn[len(bid) + 1:-4]] = core.b64(f.read())
+        for alg in sorted(self.keys.private):
+            with open(os.path.join(self.bundles, f"{bid}.{alg}.sig"), "rb") as f:
+                sigs[alg] = core.b64(f.read())
         files = {}
         for entry in header["files"]:
             with open(os.path.join(self.objects, entry["sha256"]), "rb") as f:
@@ -249,11 +270,35 @@ class Probe:
             self.state["unsent"].remove(bid)
             self.save_state()
 
+    def bundle_age_days(self, bid):
+        try:
+            h = core.read_json(os.path.join(self.bundles, f"{bid}.json"))
+            return (core.utc_now() - core.parse_iso(h["created_utc"])).days
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0
+
+    def requeue(self, bid):
+        """Move an unsent bundle to the back of the queue."""
+        if bid in self.state["unsent"]:
+            self.state["unsent"].remove(bid)
+            self.state["unsent"].append(bid)
+            self.save_state()
+
+    def prune_daily(self, now=None):
+        now = now or core.utc_now()
+        last = self.state.get("pruned_utc")
+        if last and (now - core.parse_iso(last)).total_seconds() < 86400:
+            return 0
+        n = self.prune(now)
+        self.state["pruned_utc"] = core.iso(now)
+        self.save_state()
+        return n
+
     def prune(self, now=None, keep_days=KEEP_DAYS):
         """Free the host's disk: the files of results the coordinator has stored and that are older than keep_days
         are deleted. Headers and signatures stay, so the chain on the host still verifies. Returns how many files."""
         now = now or core.utc_now()
-        unsent = set(self.state["unsent"])
+        unsent = set(self.state["unsent"]) | {r.get("bundle") for r in self.state.get("rejected", [])}   # set aside: kept
         gone = 0
         for fn in os.listdir(self.bundles):
             if not (fn.endswith(".json") and fn.count(".") == 1) or fn[:-5] in unsent:
@@ -338,6 +383,7 @@ class Probe:
 
         with cf.ThreadPoolExecutor(max_workers=workers) as pool:
             observations = list(pool.map(one, task["targets"]))
+        observations = [measures.bounded(o) for o in observations]
         bad = sum(measures.failed(o) for o in observations)
         status = "ok" if bad == 0 else ("failed" if bad == len(observations) else "partial")
         result = {"type": "witnessory.result", "version": 1, "measure": task["measure"],
@@ -345,6 +391,8 @@ class Probe:
                   "started_utc": core.iso(started), "finished_utc": core.iso(core.utc_now()),
                   "observations": observations}
         data = fit(result)
+        if b'"observations_omitted"' in data and status == "ok":
+            status = "partial"
         bid = self.seal(task["measure"], status, [("result", "result.json", data)],
                         {"name": f"witnessory-probe/{task['measure']}", "version": m["version"]}, started,
                         {"task_id": task["task_id"], "task_sha256": envelope_sha256})

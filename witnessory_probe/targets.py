@@ -21,6 +21,7 @@ NOT_PUBLIC_V6 = [ipaddress.ip_network(n) for n in (
     "2002::/16",                           # 6to4
     "2001::/32",                           # Teredo
     "::/96",                               # IPv4-compatible (deprecated)
+    "::ffff:0:0:0/96",                     # IPv4-translated
     "fec0::/10",                           # site-local (deprecated)
 )]
 
@@ -66,7 +67,7 @@ def _own_v6_net():
 
 
 def is_public(ip) -> bool:
-    if not ip.is_global:
+    if not ip.is_global or ip.is_multicast:
         return False
     if ip.version == 6:
         if ip.ipv4_mapped is not None or any(ip in n for n in NOT_PUBLIC_V6):

@@ -42,7 +42,7 @@ jobs:
           systemctl is-active witnessory-probe
           sudo -u witnessory-probe /opt/witnessory-probe/bin/witnessory-probe --home /var/lib/witnessory-probe status
           sudo sh install/install.sh --purge
-          ! id witnessory-probe
+          if id witnessory-probe; then echo 'the user is still there'; exit 1; fi
           test ! -e /opt/witnessory-probe && test ! -e /var/lib/witnessory-probe
   docker:
     if: ${{ !github.event.repository.private }}

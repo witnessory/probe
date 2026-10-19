@@ -17,6 +17,7 @@
 set -eu
 
 main() {
+  umask 022                                            # the probe's user must be able to read its program
   PACKAGE="${PACKAGE:-witnessory-probe}"
   PREFIX="${PREFIX:-/opt/witnessory-probe}"
   PROBE_HOME="${PROBE_HOME:-/var/lib/witnessory-probe}"
@@ -26,6 +27,7 @@ main() {
   [ "$(id -u)" -eq 0 ] || die "run as root (sudo sh install.sh)"
   safe_path PREFIX "$PREFIX"
   safe_path PROBE_HOME "$PROBE_HOME"
+  [ "$PREFIX" != "$PROBE_HOME" ] || die "PREFIX and PROBE_HOME must be different folders"
 
   case "${1:-}" in
     --uninstall|--purge) remove "$1"; exit 0 ;;
@@ -95,6 +97,7 @@ safe_path() {
     *) die "$1 must be an absolute path ending in /witnessory-probe (got '$2')" ;;
   esac
   case "$2" in *[!A-Za-z0-9/._-]*|*/../*|*/./*) die "$1 has characters a path here cannot have" ;; esac
+  case "$2" in /home/*|/root/*|/tmp/*|/var/tmp/*) die "$1 cannot be under /home, /root or /tmp (the service cannot use them)" ;; esac
 }
 
 as_probe() {
@@ -106,22 +109,22 @@ as_probe() {
 }
 
 remove() {
+  # Every check first, so nothing is removed unless all of it can be.
+  if [ -e "$PREFIX" ] && [ ! -x "$PREFIX/bin/witnessory-probe" ]; then
+    die "$PREFIX does not look like the probe's program folder; nothing removed"
+  fi
+  if [ "$1" = "--purge" ] && [ -e "$PROBE_HOME" ] && [ ! -f "$PROBE_HOME/card.json" ] && [ -n "$(ls -A "$PROBE_HOME")" ]; then
+    die "$PROBE_HOME does not look like the probe's folder; nothing removed"
+  fi
   if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ]; then
     systemctl disable --now witnessory-probe.service >/dev/null 2>&1 || true
     rm -f "$UNIT"
     systemctl daemon-reload
   fi
   # Only folders this installer made: the program's must hold the probe's command.
-  if [ -e "$PREFIX" ]; then
-    [ -x "$PREFIX/bin/witnessory-probe" ] || die "$PREFIX does not look like the probe's program folder; not removed"
-    rm -rf "$PREFIX"
-  fi
+  [ -e "$PREFIX" ] && rm -rf "$PREFIX"
   if [ "$1" = "--purge" ]; then
-    if [ -e "$PROBE_HOME" ]; then
-      [ -f "$PROBE_HOME/card.json" ] || [ -z "$(ls -A "$PROBE_HOME")" ] \
-        || die "$PROBE_HOME does not look like the probe's folder; not removed"
-      rm -rf "$PROBE_HOME"
-    fi
+    [ -e "$PROBE_HOME" ] && rm -rf "$PROBE_HOME"
     userdel "$USER_NAME" 2>/dev/null || true
     say "Witnessory probe removed, with its keys and results."
   else

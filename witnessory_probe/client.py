@@ -13,6 +13,7 @@ are size-limited.
 
 import datetime as dt
 import email.utils
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -23,6 +24,7 @@ from . import VERSION, core, measures, tasks
 UA = f"witnessory-probe/{VERSION}"
 TIMEOUT = 30
 POLL_MIN, POLL_MAX, POLL_DEFAULT = 60, 3600, 300
+GIVE_UP_DAYS = 7                          # a bundle that keeps failing is set aside after this long
 MAX_ANSWER = 4 << 20                      # bytes read from any coordinator answer
 MAX_TASKS_PER_POLL = 20
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
@@ -102,7 +104,7 @@ class Coordinator:
             if e.code == 401:                     # the coordinator does not know this probe: enrol again
                 self.probe.state["enrolled"] = False
             raise (Rejected if e.code in PERMANENT else Unreachable)(f"{method} {path}: HTTP {e.code}{note}", e.code)
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
             raise Unreachable(f"{method} {path}: {type(e).__name__}")
 
     def enrol(self):
@@ -110,8 +112,11 @@ class Coordinator:
         body = {"card_b64": core.b64(raw), "signatures": self.probe.keys.sign_all(raw)}
         return self._request("POST", "/v1/enrol", body, signed=False)
 
-    def tasks(self, budget, measures_on):
-        q = urllib.parse.urlencode({"budget": budget, "measures": ",".join(measures_on)})
+    def tasks(self, budget, measures_on, max_per_task=None):
+        args = {"budget": budget, "measures": ",".join(measures_on)}
+        if max_per_task is not None:
+            args["max_per_task"] = max_per_task
+        q = urllib.parse.urlencode(args)
         return self._request("GET", f"/v1/tasks?{q}")
 
     def upload(self, bid):
@@ -123,14 +128,23 @@ class Coordinator:
 
 def send(probe, coordinator, bid):
     """Upload one bundle. A bundle the coordinator refuses for good, or that can no longer be read here, is set aside
-    (kept on disk, listed in the state and the log) so it cannot block the ones after it. Raises Unreachable if the
-    coordinator cannot be reached: the bundle stays unsent."""
+    (kept on disk, listed in the state and the log). A bundle the coordinator answers with any other error goes to the
+    back of the queue, so it never blocks the others or new tasks, and is set aside if it still fails after
+    GIVE_UP_DAYS. Raises Unreachable only if the coordinator cannot be reached at all (no HTTP answer)."""
     try:
         coordinator.upload(bid)
     except Rejected as e:
         probe.set_aside(bid, str(e))
         return
-    except (OSError, ValueError, KeyError) as e:
+    except Unreachable as e:
+        if e.code is None:
+            raise                                 # no answer at all: try again next cycle, nothing else to do now
+        if probe.bundle_age_days(bid) >= GIVE_UP_DAYS:
+            probe.set_aside(bid, f"still failing after {GIVE_UP_DAYS} days: {e}")
+        else:
+            probe.requeue(bid)
+        return
+    except (OSError, ValueError, KeyError, TypeError) as e:
         probe.set_aside(bid, f"unreadable here: {type(e).__name__}")
         return
     probe.mark_sent(bid)
@@ -142,9 +156,9 @@ def _task_id(env):
     return v[:64] if isinstance(v, str) else None
 
 
-def cycle(probe, coordinator):
+def cycle(probe, coordinator, stop=lambda: False):
     """One cycle. Returns {"ran", "refused", "sent", "next_poll_s"}; raises Unreachable only if the coordinator
-    cannot be reached at the start (the caller waits and tries again)."""
+    cannot be reached at all (the caller waits and tries again). `stop()` is checked between tasks."""
     out = {"ran": [], "refused": [], "sent": 0, "next_poll_s": POLL_DEFAULT}
     if not probe.state.get("enrolled"):
         coordinator.enrol()
@@ -153,13 +167,14 @@ def cycle(probe, coordinator):
     for bid in list(probe.state["unsent"]):
         send(probe, coordinator, bid)
         out["sent"] += 1
-    probe.prune()
+    probe.prune_daily()
     settings = probe.settings()
     budget = int(settings.get("max_targets_per_hour", 600)) - probe.hour_used()
     if settings.get("paused") or budget <= 0:
         return out
     on = [m for m in measures.MEASURES if m not in settings.get("disabled_measures", [])]
-    answer = coordinator.tasks(budget, on)
+    per_task = min(int(settings.get("max_targets_per_task", 100)), tasks.MAX_TARGETS)
+    answer = coordinator.tasks(budget, on, per_task)
     try:
         out["next_poll_s"] = min(max(int(answer.get("next_poll_s") or POLL_DEFAULT), POLL_MIN), POLL_MAX)
     except (TypeError, ValueError):
@@ -168,6 +183,8 @@ def cycle(probe, coordinator):
     if not isinstance(envelopes, list):
         envelopes = []
     for env in envelopes[:MAX_TASKS_PER_POLL]:
+        if stop():
+            break
         task_id = _task_id(env)
         try:
             task = tasks.check(env, settings.get("trusted_task_keys") or [], probe.probe_id, settings, probe.seen())
@@ -190,4 +207,6 @@ def cycle(probe, coordinator):
             out["sent"] += 1
         except Unreachable:
             pass                                  # stays unsent; the next cycle sends it
+    if envelopes and not out["ran"]:
+        out["next_poll_s"] = POLL_DEFAULT         # everything given was refused: do not ask again at once
     return out

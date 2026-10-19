@@ -46,9 +46,11 @@ A bundle is a JSON header plus the files it names:
 | `host` | The Python and probe versions |
 
 The bundle ID is the SHA-256 of the header in canonical JSON (keys sorted, no spaces, UTF-8). Each key signs those
-same bytes; the signatures are kept beside the header as `<id>.<alg>.sig`. A result file is at most 300,000 bytes:
-if a task's results would be larger, the copies of servers' raw replies are dropped first (their hashes stay), then
-the last observations (counted in `observations_omitted`).
+same bytes; the signatures are kept beside the header as `<id>.<alg>.sig`. One observation is at most 8 KB (a larger
+one keeps its hashes and counts). A result file is at most 300,000 bytes: if a task's results would be larger, copies
+of servers' raw replies are dropped, largest first (their hashes stay), then the largest observations are reduced to
+their target and outcome (counted in `observations_omitted`, and the bundle's status is then `partial`), so a few
+oversized answers never push out the others.
 
 A probe never signs two bundles at the same position: its position is rebuilt from the bundles on disk whenever it
 starts, and a bundle sealed just before a crash is still sent.
@@ -86,15 +88,15 @@ A probe refuses a task, and runs none of it, when:
 A target is resolved as a fully qualified name (local search domains never apply). If any address it resolves to
 is not public, it is not contacted and is recorded as `refused_non_public`; the rest of the task runs. Not public:
 private, loopback, link-local, shared (CGNAT), multicast and reserved addresses, the IPv6 forms that can carry an
-IPv4 address (NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, 6to4 `2002::/16`, Teredo `2001::/32`, IPv4-compatible and
--mapped), and IPv6 addresses inside the host's own /64.
+IPv4 address (NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, 6to4 `2002::/16`, Teredo `2001::/32`, IPv4-compatible,
+-mapped and -translated), and IPv6 addresses inside the host's own /64.
 
 ## Measurement types
 
 | Type | Port | What is sent and read | Result per target |
 | --- | --- | --- | --- |
 | `tls_pq` | 443 | Two TLS ClientHellos (one like a current browser, offering X25519MLKEM768 and X25519; one offering X25519MLKEM768 alone), each answered by the server's first reply, after which the connection is closed. Then one ordinary TLS connection to read the certificate's algorithms (this one completes a handshake and sends nothing else). | `level` (`ready`, `partly`, `not_yet`, `unknown`), both replies (group, TLS version, alert or error, the hash of the raw reply and its first 2 KB), the certificate's signature and key algorithms |
-| `ssh_kex` | 22 | The identification line `SSH-2.0-witnessory_probe https://witnessory.org/probe.html` and a key-exchange offer; the server's identification line and offer are read, then the connection is closed. No key exchange, no login. | The server's identification, the key-exchange, host-key, cipher and MAC methods it offers (at most 64 names per list), and what a current OpenSSH client would select |
+| `ssh_kex` | 22 | The identification line `SSH-2.0-witnessory_probe https://witnessory.org/probe.html` and a key-exchange offer; the server's identification line and offer are read, then the connection is closed. No key exchange, no login. | The server's identification, the key-exchange, host-key, cipher and MAC methods it offers (at most 64 names per list; a name is printable ASCII of at most 64 characters, others are left out), and what a current OpenSSH client would select |
 
 Each observation's `outcome` is `measured` (the server answered, however negatively: an alert or a classical group
 is an answer), `no_answer` (the name has no address, or the connection timed out, was refused or reset, or the reply
@@ -119,7 +121,7 @@ than 5 minutes off; the probe then says if its own clock is wrong.
 | Request | Body | Answer |
 | --- | --- | --- |
 | `POST /v1/enrol` (not signed as above: the card's signatures prove the keys) | `{"card_b64": <the card's canonical bytes, base64>, "signatures": {alg: base64}}` | `{"probe_id", "accepted"}` |
-| `GET /v1/tasks?budget=<targets left this hour>&measures=<types turned on>` | — | `{"tasks": [<task envelope>, ...], "next_poll_s": <seconds>}` |
+| `GET /v1/tasks?budget=<targets left this hour>&measures=<types turned on>&max_per_task=<the host's per-task cap>` | — | `{"tasks": [<task envelope>, ...], "next_poll_s": <seconds>}` |
 | `POST /v1/bundles` | `{"header_b64": <the header's exact bytes, base64>, "signatures": {alg: base64}, "files": {sha256: base64}}` | `{"stored": <bundle id>}` |
 | `POST /v1/refusals` | `{"task_id", "reason"}` | `{"ok": true}` |
 | `GET /v1/me` | — | the probe's credits, results, start date, and the network and country the coordinator sees (shown only to the probe) |
@@ -133,8 +135,15 @@ a dropped connection loses nothing. A bundle the coordinator refuses for good (H
 longer be read on the host, is set aside, kept on disk and listed in the log, so it cannot block the bundles after
 it. An HTTP 401 makes the probe enrol again. `next_poll_s` is honoured within 60 to 3,600 seconds.
 
+A bundle the coordinator answers with any other error (a server error, say) goes to the back of the queue, so it never
+holds up new tasks, and is set aside if it still fails after 7 days. If every task in an answer was refused, the probe
+waits the default time before asking again. A stop signal takes effect between tasks; a second one stops at once (the
+chain is crash-safe).
+
 The coordinator accepts a probe's identity bundle once, at position 0, and other bundles only for tasks it gave that
-probe.
+probe. It checks the Ed25519 signatures as they arrive; the core verifies both signatures and every file's hash when it
+collects results, and credits a probe only for results that verify (so credits appear after collection, within about
+an hour).
 
 ## What the host sees
 
@@ -143,7 +152,7 @@ probe.
 - `witnessory-probe status` shows the ID, the position in the chain, unsent bundles, caps and whether paused.
 - `witnessory-probe me` shows the probe's credits, results and public page.
 - `witnessory-probe pause` and `resume`; per-type opt-outs and caps in `settings.json`.
-- The files of results already stored by the coordinator are deleted from the host after 30 days; their signed
-  headers stay, so the chain still verifies.
+- Once a day, the files of results already stored by the coordinator and older than 30 days are deleted from the
+  host; their signed headers stay, so the chain still verifies. Results set aside are kept.
 - Removing the probe's folder removes everything it stored on the host. Results already sent stay in Witnessory's
   records.

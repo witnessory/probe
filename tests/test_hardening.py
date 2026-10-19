@@ -131,10 +131,24 @@ class Results(Base):
         data = home.fit(big)
         self.assertLessEqual(len(data), home.RESULT_MAX)
         r = json.loads(data)
-        self.assertTrue(r["observations"][0]["browser"]["raw_dropped"])
+        self.assertTrue(any(o["browser"].get("raw_dropped") for o in r["observations"]))
+        self.assertEqual(len(r["observations"]), 200)                       # nothing omitted: only copies dropped
         huge = {"type": "witnessory.result", "observations": [{"target": "x" * 5000} for _ in range(200)]}
-        r = json.loads(home.fit(huge))
+        data = home.fit(huge)
+        r = json.loads(data)
+        self.assertLessEqual(len(data), home.RESULT_MAX)
         self.assertGreater(r["observations_omitted"], 0)
+        self.assertEqual(len(r["observations"]), 200)                       # reduced, never removed
+
+    def test_a_few_oversized_answers_never_push_out_the_others(self):
+        honest = [{"target": f"h{i}.example", "outcome": "measured", "level": "ready"} for i in range(48)]
+        hostile = [{"target": f"x{i}.example", "outcome": "measured", "ssh": {"kex": ["k" * 60] * 64,
+                    "host_key": ["h" * 60] * 64, "kexinit_hex": "ab" * 2048}} for i in range(2)]
+        obs = [measures.bounded(o) for o in hostile + honest]
+        self.assertTrue(all(len(core.canonical(o)) <= measures.OBS_MAX for o in obs))
+        r = json.loads(home.fit({"type": "witnessory.result", "observations": obs}))
+        self.assertEqual([o["target"] for o in r["observations"][2:]], [o["target"] for o in honest])
+        self.assertNotIn("observations_omitted", r)
 
     def test_a_bundle_sealed_just_before_a_crash_is_still_sent(self):
         p = self.probe
@@ -170,6 +184,54 @@ class Results(Base):
         self.assertEqual(len(r["ran"]), 1)
         self.assertNotIn(bid, p.state["unsent"])
         self.assertEqual(p.state["rejected"][-1]["bundle"], bid)
+
+
+class Resilience(Base):
+    def test_a_bundle_the_coordinator_keeps_failing_does_not_block_new_tasks(self):
+        p = self.probe
+        stuck = p.seal("tls_pq", "ok", [("result", "result.json", b'{"s": 1}')], None, core.utc_now(), None)
+        real = client.Coordinator.upload
+
+        def upload(coord, bid):
+            if bid == stuck:
+                raise client.Unreachable("POST /v1/bundles: HTTP 500", 500)
+            return real(coord, bid)
+        client.Coordinator.upload = upload
+        self.addCleanup(setattr, client.Coordinator, "upload", real)
+        self.coord.queue = [self.signer.sign(self.signer.task())]
+        r = self.cycle()
+        self.assertEqual(len(r["ran"]), 1)                              # new work went ahead
+        self.assertEqual(p.state["unsent"], [stuck])                    # the stuck one waits at the back
+
+    def test_a_corrupt_state_file_is_rebuilt(self):
+        p = self.probe
+        head = p.state["head"]
+        with open(os.path.join(p.home, "state.json"), "w") as f:
+            f.write("{not json")
+        q = Probe(p.home)
+        q.acquire()
+        self.addCleanup(q.release)
+        self.assertEqual((q.state["seq"], q.state["head"]), (1, head))
+
+    def test_set_aside_results_are_never_pruned(self):
+        import datetime as dt
+        p = self.probe
+        bid = p.seal("tls_pq", "ok", [("result", "result.json", b'{"kept": 1}')], None, core.utc_now(), None)
+        p.set_aside(bid, "HTTP 409")
+        self.assertEqual(p.prune(now=core.utc_now() + dt.timedelta(days=40)), 0)
+        self.assertTrue(os.path.exists(os.path.join(p.objects, core.sha256(b'{"kept": 1}'))))
+
+    def test_the_per_task_limit_is_sent(self):
+        self.probe.update_settings(max_targets_per_task=7)
+        self.cycle()
+        self.assertIn("max_per_task=7", self.coord.polls[0])
+
+    def test_stopping_happens_between_tasks(self):
+        s = self.signer
+        self.coord.queue = [s.sign(s.task()), s.sign(s.task())]
+        done = []
+        r = client.cycle(self.probe, client.Coordinator(self.coord.url, self.probe), stop=lambda: bool(done) or done.append(1))
+        self.assertEqual(len(r["ran"]), 1)
 
 
 class Servers(unittest.TestCase):
@@ -209,12 +271,13 @@ class Servers(unittest.TestCase):
         self.assertEqual(len(o["browser"]["raw_reply_hex"]), 4096)
 
     def test_ssh_name_lists_are_capped(self):
-        srv = SSHServer(kex=tuple(f"kex{i}-{'x' * 290}" for i in range(100)))     # 30 KB: within the packet cap
+        names = tuple(f"kex{i}-{'x' * 50}" for i in range(100)) + ("bad\x00name", "y" * 300)
+        srv = SSHServer(kex=names)
         self.addCleanup(srv.close)
         measures.SSH_PORT = srv.port
         o = measures.ssh_kex("site.test")["ssh"]
-        self.assertEqual(len(o["kex"]), 64)
-        self.assertTrue(all(len(k) <= 128 for k in o["kex"]))
+        self.assertEqual(len(o["kex"]), 64)                                 # 64 kept
+        self.assertTrue(all(len(k) <= 64 and k.isprintable() and k.isascii() for k in o["kex"]))
         self.assertIsNone(o["kexinit_hex"])
         big = SSHServer(kex=tuple(f"kex{i}-{'x' * 300}" for i in range(500)))    # 150 KB: over the packet cap
         self.addCleanup(big.close)
@@ -228,7 +291,8 @@ class Names(unittest.TestCase):
             with self.assertRaises(targets.Refused):
                 targets.normalise(n)
         for a in ("64:ff9b::a00:1", "64:ff9b:1::1", "2002:c0a8:101::1", "2001:0:4136:e378::1", "::ffff:10.0.0.1",
-                  "::a00:1", "fec0::1", "100.64.0.1", "169.254.1.1", "0.0.0.0"):
+                  "::a00:1", "fec0::1", "100.64.0.1", "169.254.1.1", "0.0.0.0", "224.0.0.1", "ff02::1",
+                  "::ffff:0:a00:1"):
             self.assertFalse(targets.is_public(ipaddress.ip_address(a)), a)
         self.assertTrue(targets.is_public(ipaddress.ip_address("8.8.8.8")))
 

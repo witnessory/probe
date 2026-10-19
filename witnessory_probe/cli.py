@@ -106,7 +106,9 @@ def cmd_run(a):
         sys.exit(str(e))
     stop = []
 
-    def on_signal(signum, frame):                 # finish the current step, then stop (never mid-seal)
+    def on_signal(signum, frame):                 # finish the current task, then stop (never mid-seal)
+        if stop:
+            raise SystemExit(1)                   # a second signal: stop now (the chain is crash-safe)
         stop.append(signum)
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -118,7 +120,7 @@ def cmd_run(a):
     try:
         while not stop:
             try:
-                r = client.cycle(p, coord)
+                r = client.cycle(p, coord, stop=lambda: bool(stop))
                 wait = r["next_poll_s"]
                 print(f"{core.iso(core.utc_now())} ran {len(r['ran'])}, refused {len(r['refused'])}, "
                       f"sent {r['sent']}", flush=True)
