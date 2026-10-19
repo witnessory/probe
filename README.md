@@ -8,7 +8,7 @@ at once.
 ## Try it
 
 ```
-pipx install witnessory-probe
+pipx install https://github.com/witnessory/probe/releases/download/v0.4.2/witnessory_probe-0.4.2-py3-none-any.whl
 witnessory-probe check example.org
 witnessory-probe check example.org --ssh
 ```

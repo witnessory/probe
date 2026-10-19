@@ -10,7 +10,7 @@
 # in /opt/witnessory-probe, keeps the probe's keys and results in /var/lib/witnessory-probe, and runs it as a
 # sandboxed systemd service. Nothing else on the machine is changed. docs/PROTOCOL.md says what the probe does.
 #
-# Settings (environment): PACKAGE (what pip installs; default "witnessory-probe"); PREFIX and PROBE_HOME (absolute
+# Settings (environment): PACKAGE (what pip installs; default: this release's wheel from GitHub); PREFIX and PROBE_HOME (absolute
 # paths ending in "witnessory-probe", no spaces); COORDINATOR (an https address, for a private deployment).
 #
 # Everything is inside main(), called on the last line: a download cut short runs nothing.
@@ -18,7 +18,7 @@ set -eu
 
 main() {
   umask 022                                            # the probe's user must be able to read its program
-  PACKAGE="${PACKAGE:-witnessory-probe}"
+  PACKAGE="${PACKAGE:-https://github.com/witnessory/probe/releases/download/v0.4.2/witnessory_probe-0.4.2-py3-none-any.whl}"
   PREFIX="${PREFIX:-/opt/witnessory-probe}"
   PROBE_HOME="${PROBE_HOME:-/var/lib/witnessory-probe}"
   USER_NAME="witnessory-probe"
