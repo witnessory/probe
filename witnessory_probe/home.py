@@ -36,6 +36,7 @@ def shipped_defaults():
 
 
 LOG_MAX = 5 << 20
+KEEP_DAYS = 30                # days a sent result's files stay on the host
 RESULT_MAX = 300_000          # bytes of one result: always within what the coordinator accepts
 RAW_FIELDS = ("raw_reply_hex", "kexinit_hex")
 NO_MLDSA = ("this machine's cryptography library cannot sign with ML-DSA, which the probe needs: upgrade it "
@@ -247,6 +248,28 @@ class Probe:
         if bid in self.state["unsent"]:
             self.state["unsent"].remove(bid)
             self.save_state()
+
+    def prune(self, now=None, keep_days=KEEP_DAYS):
+        """Free the host's disk: the files of results the coordinator has stored and that are older than keep_days
+        are deleted. Headers and signatures stay, so the chain on the host still verifies. Returns how many files."""
+        now = now or core.utc_now()
+        unsent = set(self.state["unsent"])
+        gone = 0
+        for fn in os.listdir(self.bundles):
+            if not (fn.endswith(".json") and fn.count(".") == 1) or fn[:-5] in unsent:
+                continue
+            try:
+                h = core.read_json(os.path.join(self.bundles, fn))
+                if h["layer"] == "identity" or (now - core.parse_iso(h["created_utc"])).days < keep_days:
+                    continue
+                for f in h["files"]:
+                    path = os.path.join(self.objects, f["sha256"])
+                    if os.path.exists(path):
+                        os.remove(path)
+                        gone += 1
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return gone
 
     def set_aside(self, bid, reason):
         """A bundle that cannot be sent: kept on disk, listed in the state and the log, no longer queued."""

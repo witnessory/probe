@@ -147,6 +147,20 @@ class Results(Base):
         self.assertIn(bid, q.state["unsent"])
         self.assertEqual(q.state["head"], bid)
 
+    def test_old_sent_results_are_pruned_but_headers_stay(self):
+        import datetime as dt
+        p = self.probe
+        bid = p.seal("tls_pq", "ok", [("result", "result.json", b'{"old": 1}')], None, core.utc_now(), None)
+        p.mark_sent(bid)
+        keep = p.seal("tls_pq", "ok", [("result", "result.json", b'{"unsent": 1}')], None, core.utc_now(), None)
+        later = core.utc_now() + dt.timedelta(days=31)
+        self.assertEqual(p.prune(now=later), 1)
+        self.assertFalse(os.path.exists(os.path.join(p.objects, core.sha256(b'{"old": 1}'))))
+        self.assertTrue(os.path.exists(os.path.join(p.bundles, bid + ".json")))
+        self.assertTrue(os.path.exists(os.path.join(p.objects, core.sha256(b'{"unsent": 1}'))))   # not sent yet
+        self.assertIn(keep, p.state["unsent"])
+        self.assertTrue(os.path.exists(os.path.join(p.home, "card.json")))
+
     def test_an_unreadable_bundle_is_set_aside(self):
         p = self.probe
         bid = p.seal("tls_pq", "ok", [("result", "result.json", b'{"lost": 1}')], None, core.utc_now(), None)

@@ -143,5 +143,7 @@ probe.
 - `witnessory-probe status` shows the ID, the position in the chain, unsent bundles, caps and whether paused.
 - `witnessory-probe me` shows the probe's credits, results and public page.
 - `witnessory-probe pause` and `resume`; per-type opt-outs and caps in `settings.json`.
+- The files of results already stored by the coordinator are deleted from the host after 30 days; their signed
+  headers stay, so the chain still verifies.
 - Removing the probe's folder removes everything it stored on the host. Results already sent stay in Witnessory's
   records.

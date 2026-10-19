@@ -153,6 +153,7 @@ def cycle(probe, coordinator):
     for bid in list(probe.state["unsent"]):
         send(probe, coordinator, bid)
         out["sent"] += 1
+    probe.prune()
     settings = probe.settings()
     budget = int(settings.get("max_targets_per_hour", 600)) - probe.hour_used()
     if settings.get("paused") or budget <= 0:
