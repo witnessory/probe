@@ -212,8 +212,9 @@ class Probe:
                     self.log({"task_id": None, "measure": None, "targets": [], "outcome": f"unreadable bundle {fn}"})
         later = sorted(x for x in found if x[0] >= self.state["seq"])
         if later:
-            for _, bid in later:
-                if bid not in self.state["unsent"]:
+            floor = self.sent_watermark() if self.state["seq"] == 0 else -1   # state lost: the history already sent stays
+            for seq, bid in later:
+                if seq > floor and bid not in self.state["unsent"]:
                     self.state["unsent"].append(bid)
             self.state["seq"], self.state["head"] = later[-1][0] + 1, later[-1][1]
             self.save_state()
@@ -269,6 +270,19 @@ class Probe:
         if bid in self.state["unsent"]:
             self.state["unsent"].remove(bid)
             self.save_state()
+        try:                                       # "sent up to here", kept apart from state.json
+            seq = core.read_json(os.path.join(self.bundles, f"{bid}.json"))["seq"]
+            if seq > self.sent_watermark():
+                core.write_atomic(os.path.join(self.home, "sent_seq"), str(seq).encode())
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    def sent_watermark(self):
+        try:
+            with open(os.path.join(self.home, "sent_seq"), encoding="ascii") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return -1
 
     def bundle_age_days(self, bid):
         try:

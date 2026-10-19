@@ -135,8 +135,10 @@ a dropped connection loses nothing. A bundle the coordinator refuses for good (H
 longer be read on the host, is set aside, kept on disk and listed in the log, so it cannot block the bundles after
 it. An HTTP 401 makes the probe enrol again. `next_poll_s` is honoured within 60 to 3,600 seconds.
 
-A bundle the coordinator answers with any other error (a server error, say) goes to the back of the queue, so it never
-holds up new tasks, and is set aside if it still fails after 7 days. If every task in an answer was refused, the probe
+A bundle the coordinator answers with any other error (a server error, say), or that gets no answer at all, goes to
+the back of the queue, so it never holds up new tasks, and is set aside if it still fails after 7 days; with no answer,
+the probe stops uploading for that cycle but still takes tasks. Uploads are given time in proportion to their size (at
+least 20 kB a second), and a Retry-After from the coordinator is honoured, up to an hour. If every task in an answer was refused, the probe
 waits the default time before asking again. A stop signal takes effect between tasks; a second one stops at once (the
 chain is crash-safe).
 

@@ -203,6 +203,57 @@ class Resilience(Base):
         self.assertEqual(len(r["ran"]), 1)                              # new work went ahead
         self.assertEqual(p.state["unsent"], [stuck])                    # the stuck one waits at the back
 
+    def test_an_upload_with_no_answer_does_not_stop_new_tasks(self):
+        p = self.probe
+        self.cycle()                                                     # enrolled, card sent
+        slow = p.seal("tls_pq", "ok", [("result", "result.json", b'{"slow": 1}')], None, core.utc_now(), None)
+        real = client.Coordinator.upload
+
+        def upload(coord, bid):
+            if bid == slow:
+                raise client.Unreachable("POST /v1/bundles: timeout")    # no HTTP answer at all
+            return real(coord, bid)
+        client.Coordinator.upload = upload
+        self.addCleanup(setattr, client.Coordinator, "upload", real)
+        self.coord.queue = [self.signer.sign(self.signer.task())]
+        r = self.cycle()
+        self.assertEqual(len(r["ran"]), 1)
+        self.assertIn(slow, p.state["unsent"])
+
+    def test_retry_after_is_read(self):
+        import http.server
+        import threading
+
+        class Busy(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(429)
+                self.send_header("Retry-After", "1800")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Busy)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        with self.assertRaises(client.Unreachable) as cm:
+            client.Coordinator(f"http://127.0.0.1:{srv.server_address[1]}", self.probe).enrol()
+        self.assertEqual((cm.exception.code, cm.exception.retry_after), (429, 1800))
+
+    def test_after_losing_state_only_unsent_bundles_are_queued(self):
+        p = self.probe
+        self.cycle()                                                     # the card is sent
+        sent = p.seal("tls_pq", "ok", [("result", "result.json", b'{"a": 1}')], None, core.utc_now(), None)
+        p.mark_sent(sent)
+        unsent = p.seal("tls_pq", "ok", [("result", "result.json", b'{"b": 1}')], None, core.utc_now(), None)
+        os.remove(os.path.join(p.home, "state.json"))
+        q = Probe(p.home)
+        q.acquire()
+        self.addCleanup(q.release)
+        self.assertEqual(q.state["unsent"], [unsent])
+
     def test_a_corrupt_state_file_is_rebuilt(self):
         p = self.probe
         head = p.state["head"]

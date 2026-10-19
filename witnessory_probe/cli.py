@@ -126,7 +126,7 @@ def cmd_run(a):
                       f"sent {r['sent']}", flush=True)
             except client.Unreachable as e:
                 print(f"{core.iso(core.utc_now())} coordinator unreachable ({e}); trying again later", flush=True)
-                wait = client.POLL_DEFAULT
+                wait = min(max(client.POLL_DEFAULT, e.retry_after or 0), client.POLL_MAX)   # it may ask us to wait longer
                 if a.once:
                     return 1
             except Exception:                     # a bug must not crash-loop the host's service: log, wait, retry

@@ -31,11 +31,13 @@ LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
 class Unreachable(RuntimeError):
-    """The coordinator could not be reached or answered with an error (code: the HTTP status, if any)."""
+    """The coordinator could not be reached or answered with an error (code: the HTTP status, if any; retry_after: the
+    seconds it asked us to wait, if it said)."""
 
-    def __init__(self, message, code=None):
+    def __init__(self, message, code=None, retry_after=None):
         super().__init__(message)
         self.code = code
+        self.retry_after = retry_after
 
 
 class Rejected(Unreachable):
@@ -89,8 +91,9 @@ class Coordinator:
                             "X-Witnessory-Signature": self.probe.keys.sign_ed25519(msg)})
         req = urllib.request.Request(self.base + path, data=data if method != "GET" else None, method=method,
                                      headers=headers)
+        timeout = min(TIMEOUT + len(data) / 20_000, 600)  # a slow uplink is given time: 20 kB/s at the least
         try:
-            with _OPENER.open(req, timeout=TIMEOUT) as r:
+            with _OPENER.open(req, timeout=timeout) as r:
                 raw = r.read(MAX_ANSWER + 1)
             if len(raw) > MAX_ANSWER:
                 raise Unreachable(f"{method} {path}: answer too large")
@@ -100,10 +103,14 @@ class Coordinator:
             return answer
         except urllib.error.HTTPError as e:
             note = clock_note(e.headers) if e.code == 401 else ""
+            try:
+                wait = int(e.headers.get("Retry-After") or 0) or None
+            except (TypeError, ValueError):
+                wait = None
             e.close()
             if e.code == 401:                     # the coordinator does not know this probe: enrol again
                 self.probe.state["enrolled"] = False
-            raise (Rejected if e.code in PERMANENT else Unreachable)(f"{method} {path}: HTTP {e.code}{note}", e.code)
+            raise (Rejected if e.code in PERMANENT else Unreachable)(f"{method} {path}: HTTP {e.code}{note}", e.code, wait)
         except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
             raise Unreachable(f"{method} {path}: {type(e).__name__}")
 
@@ -137,12 +144,12 @@ def send(probe, coordinator, bid):
         probe.set_aside(bid, str(e))
         return
     except Unreachable as e:
-        if e.code is None:
-            raise                                 # no answer at all: try again next cycle, nothing else to do now
         if probe.bundle_age_days(bid) >= GIVE_UP_DAYS:
             probe.set_aside(bid, f"still failing after {GIVE_UP_DAYS} days: {e}")
         else:
             probe.requeue(bid)
+        if e.code is None:
+            raise                                 # no answer at all: the caller stops uploading for this cycle
         return
     except (OSError, ValueError, KeyError, TypeError) as e:
         probe.set_aside(bid, f"unreadable here: {type(e).__name__}")
@@ -165,7 +172,10 @@ def cycle(probe, coordinator, stop=lambda: False):
         probe.state["enrolled"] = True
         probe.save_state()
     for bid in list(probe.state["unsent"]):
-        send(probe, coordinator, bid)
+        try:
+            send(probe, coordinator, bid)
+        except Unreachable:
+            break                                 # no answer (a slow or broken link): the rest wait, tasks go on
         out["sent"] += 1
     probe.prune_daily()
     settings = probe.settings()
