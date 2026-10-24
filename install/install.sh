@@ -18,7 +18,7 @@ set -eu
 
 main() {
   umask 022                                            # the probe's user must be able to read its program
-  PACKAGE="${PACKAGE:-https://github.com/witnessory/probe/releases/download/v0.4.2/witnessory_probe-0.4.2-py3-none-any.whl}"
+  PACKAGE="${PACKAGE:-https://github.com/witnessory/probe/releases/download/v0.4.3/witnessory_probe-0.4.3-py3-none-any.whl}"
   PREFIX="${PREFIX:-/opt/witnessory-probe}"
   PROBE_HOME="${PROBE_HOME:-/var/lib/witnessory-probe}"
   USER_NAME="witnessory-probe"

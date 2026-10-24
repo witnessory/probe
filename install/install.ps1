@@ -13,7 +13,7 @@ param(
     [switch]$Uninstall,
     [switch]$Purge,
     [switch]$NoTask,
-    [string]$Package = "https://github.com/witnessory/probe/releases/download/v0.4.2/witnessory_probe-0.4.2-py3-none-any.whl",
+    [string]$Package = "https://github.com/witnessory/probe/releases/download/v0.4.3/witnessory_probe-0.4.3-py3-none-any.whl",
     [string]$ProbeHome = (Join-Path $env:USERPROFILE ".witnessory-probe"),
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA "witnessory-probe")
 )
